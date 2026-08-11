@@ -10,6 +10,7 @@
 #include <soc/soc_caps.h>
 
 #include "esphome/components/esp32_ble/ble.h"
+#include "esphome/components/esp32_ble_server/ble_2902.h"
 
 // Chip-temperature access differs by variant, exactly as ESPHome's own
 // internal_temperature component does it (internal_temperature_esp32.cpp).
@@ -104,6 +105,15 @@ void OpenDisplayComponent::setup_gatt_() {
     this->mark_failed();
     return;
   }
+
+  // A NOTIFY characteristic is useless without a Client Characteristic
+  // Configuration Descriptor (0x2902). ESPHome ships BLE2902 but does NOT add it
+  // automatically -- add_descriptor() must be called explicitly
+  // (esp32_ble_server/ble_characteristic.cpp:73-90). Without it every client
+  // that calls start_notify() fails with "BT_GATT: format mismatch" and drops
+  // the link, which looks like a connection bug rather than a missing
+  // descriptor.
+  this->characteristic_->add_descriptor(new esp32_ble_server::BLE2902());  // NOLINT
 
   // THE BLE CALLBACK. Bounds-check, copy, return -- nothing else. Any work here
   // runs off the loop task and would block the BLE stack.

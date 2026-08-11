@@ -9,6 +9,9 @@
 
 esphome:
   name: opendisplay-epaper
+  # Appends "-<last 6 of MAC>" to the BLE device name set in esp32_ble below,
+  # giving the "OD<id>" shape real OpenDisplay devices use.
+  name_add_mac_suffix: true
 
 esp32:
   # MUST be an ESP32-S3. The EE04 pinout below (7, 9, 10, 38, 44, 4) is S3-only:
@@ -28,6 +31,14 @@ external_components:
   - source:
       type: local
       path: ../components
+
+# Real OpenDisplay devices advertise as "OD" + chip id (Firmware
+# ble_transport_esp32.cpp:544). ESPHome would otherwise use the esphome: name:,
+# so set it explicitly here. The "-<last 6 of MAC>" suffix comes from
+# esphome: name_add_mac_suffix, which is an APP-level option -- esp32_ble itself
+# only accepts `name:` and reads App.is_name_add_mac_suffix_enabled().
+esp32_ble:
+  name: OD
 
 esp32_ble_server:
   # max_clients: 1 is the default and opendisplay requires it. At 1, ESPHome

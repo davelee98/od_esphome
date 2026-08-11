@@ -25,6 +25,9 @@ substitutions:
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
+  # Appends "-<last 6 of MAC>" to the BLE device name set in esp32_ble below,
+  # giving the "OD<id>" shape real OpenDisplay devices use.
+  name_add_mac_suffix: true
 
 esp32:
   # Adjust to your board. The EE04 is an ESP32-S3-N16R8.
@@ -75,6 +78,14 @@ captive_portal:
 # ---------------------------------------------------------------------------
 # BLE server
 # ---------------------------------------------------------------------------
+# Real OpenDisplay devices advertise as "OD" + chip id (Firmware
+# ble_transport_esp32.cpp:544). Without this ESPHome would advertise the
+# esphome: name: instead. The "-<last 6 of MAC>" suffix comes from
+# esphome: name_add_mac_suffix, which is an APP-level option -- esp32_ble itself
+# only accepts `name:` and reads App.is_name_add_mac_suffix_enabled().
+esp32_ble:
+  name: OD
+
 # max_clients: 1 is REQUIRED and is also the default. At 1, ESPHome stops
 # advertising once a client connects and resumes on disconnect
 # (esp32_ble_server/ble_server.cpp:172-174) -- exactly the single-central
