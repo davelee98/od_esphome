@@ -75,37 +75,6 @@ void OpenDisplayComponent::setup_gatt_() {
     return;
   }
 
-  // Advertise as OD<chipid>, matching real OpenDisplay firmware exactly
-  // (Firmware/src/ble_transport_esp32.cpp:544 -> encryption.cpp:863-873):
-  //     chipId = (efuse_mac >> 24) & 0xFFFFFF, printed %06X upper-case.
-  // Arduino's getEfuseMac() loads the six MAC bytes little-endian, so that
-  // chipId is mac[3] | mac[4]<<8 | mac[5]<<16 and %06X emits mac[5], mac[4],
-  // mac[3] -- i.e. the last three MAC bytes in REVERSE order. Reproduced here
-  // byte-for-byte so an ESPHome device is indistinguishable from a tag.
-  //
-  // Set here rather than via `esp32_ble: name:` because that path forces a
-  // hyphen before the MAC suffix (make_name_with_suffix_to in ble.cpp:304),
-  // giving "OD-123456" instead of "OD123456". Safe to override: ESP32BLE sets
-  // the name at setup_priority BLUETOOTH (350) and this component runs at
-  // AFTER_CONNECTION (100), so ours is applied last and nothing resets it on an
-  // advertising restart.
-  uint8_t mac[6] = {};
-  if (esp_efuse_mac_get_default(mac) == ESP_OK) {
-    char od_name[16];
-    snprintf(od_name, sizeof(od_name), "OD%02X%02X%02X", mac[5], mac[4], mac[3]);
-    const esp_err_t nerr = esp_ble_gap_set_device_name(od_name);
-    if (nerr != ESP_OK) {
-      ESP_LOGW(TAG, "esp_ble_gap_set_device_name(%s) failed: %d", od_name, static_cast<int>(nerr));
-    } else {
-      // Kept for dump_config() as well as here: setup() output scrolls past
-      // before `esphome logs` attaches, so a boot-only line is easy to miss and
-      // indistinguishable from the code not running at all.
-      snprintf(this->ble_name_, sizeof(this->ble_name_), "%s", od_name);
-    }
-  } else {
-    ESP_LOGW(TAG, "esp_efuse_mac_get_default failed; BLE name left as the ESPHome default");
-  }
-
   // Declare the preferred ATT MTU at OD_BLE_MAX_FRAME (256) rather than the 512
   // ATT maximum, so an oversize write draws ATT error 0x0D instead of being
   // silently dropped (opendisplay_protocol.h:63-73).
@@ -206,6 +175,10 @@ void OpenDisplayComponent::on_ble_disconnect() {
 
 void OpenDisplayComponent::loop() {
   const uint32_t now = millis();
+
+#ifdef USE_ESP32
+  this->apply_ble_name_();
+#endif
 
   if (!this->connected_)
     this->engine_.on_disconnect(this->connection_generation_);
@@ -397,6 +370,58 @@ void OpenDisplayComponent::update_msd_(uint32_t now_ms) {
   this->msd_loop_counter_ = static_cast<uint8_t>((this->msd_loop_counter_ + 1) & 0x0F);
 }
 
+#ifdef USE_ESP32
+void OpenDisplayComponent::apply_ble_name_() {
+  if (this->ble_name_[0] != '\0' || this->service_ == nullptr)
+    return;
+  // Deferred until the GATT service is RUNNING, for two reasons:
+  //  1. ESP32BLE::setup() only calls ble_pre_setup_() + enable(); the real init
+  //     -- including its own esp_ble_gap_set_device_name() -- runs later from
+  //     ESP32BLE::loop() (ble.cpp:72-84, :292-330). Calling ours in setup() hits
+  //     an uninitialised stack and fails.
+  //  2. Even if it succeeded, ESPHome's later call would overwrite it.
+  // A running service proves GATT registration finished, which is downstream of
+  // both.
+  if (!this->service_->is_running())
+    return;
+
+  // Matches real OpenDisplay firmware byte-for-byte
+  // (Firmware/src/ble_transport_esp32.cpp:544 -> encryption.cpp:863-873):
+  // chipId = (efuse_mac >> 24) & 0xFFFFFF printed %06X. Arduino's getEfuseMac()
+  // loads the six MAC bytes little-endian, so that is mac[3] | mac[4]<<8 |
+  // mac[5]<<16 and %06X emits mac[5], mac[4], mac[3] -- the last three MAC bytes
+  // in REVERSE order. Set here rather than via `esp32_ble: name:` because that
+  // path forces a hyphen before the suffix (ble.cpp:304), giving "OD-123456".
+  uint8_t mac[6] = {};
+  const esp_err_t merr = esp_efuse_mac_get_default(mac);
+  if (merr != ESP_OK) {
+    ESP_LOGW(TAG, "esp_efuse_mac_get_default failed: %d; BLE name left as default",
+             static_cast<int>(merr));
+    this->ble_name_err_ = merr;
+    this->ble_name_[0] = '?';  // stop retrying
+    return;
+  }
+
+  char od_name[16];
+  snprintf(od_name, sizeof(od_name), "OD%02X%02X%02X", mac[5], mac[4], mac[3]);
+  const esp_err_t nerr = esp_ble_gap_set_device_name(od_name);
+  if (nerr != ESP_OK) {
+    // Retryable: leave ble_name_ empty so the next loop() tries again.
+    this->ble_name_err_ = nerr;
+    return;
+  }
+
+  snprintf(this->ble_name_, sizeof(this->ble_name_), "%s", od_name);
+  this->ble_name_err_ = ESP_OK;
+  ESP_LOGCONFIG(TAG, "BLE device name: %s", od_name);
+
+  // The name lives in the advertisement, which was already built. Force a
+  // rebuild so scanners see it without waiting for the next MSD change.
+  if (esp32_ble::global_ble != nullptr)
+    esp32_ble::global_ble->advertising_start();
+}
+#endif
+
 float OpenDisplayComponent::read_chip_temperature_() {
 #ifdef USE_ESP32
 #if defined(USE_ESP32_VARIANT_ESP32)
@@ -465,7 +490,11 @@ void OpenDisplayComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Config blob: %s (%u bytes)", this->config_valid_ ? "valid" : "INVALID",
                 static_cast<unsigned>(this->config_blob_len_));
   ESP_LOGCONFIG(TAG, "  Security: NONE (open, unauthenticated characteristic)");
-  ESP_LOGCONFIG(TAG, "  BLE name: %s", this->ble_name_[0] ? this->ble_name_ : "(not set)");
+  if (this->ble_name_[0] != '\0' && this->ble_name_[0] != '?') {
+    ESP_LOGCONFIG(TAG, "  BLE name: %s", this->ble_name_);
+  } else {
+    ESP_LOGCONFIG(TAG, "  BLE name: NOT SET (last error %d)", static_cast<int>(this->ble_name_err_));
+  }
   // Report the service's REAL state, not merely that we queued it -- the whole
   // failure this replaced looked fine from our side.
   const char *svc = "NOT CREATED";
