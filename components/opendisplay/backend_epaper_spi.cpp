@@ -158,10 +158,12 @@ BackendResult EpaperSPIBackend::begin_refresh(RefreshRequest request) {
   // emit 0x0073 for someone else's update while our frame was never refreshed.
   // So require idle first, then confirm the call took effect.
   if (!this->display_->is_idle()) {
-    ESP_LOGW(TAG, "display busy; refusing to start refresh");
+    ESP_LOGW(TAG, "refresh refused: driver not idle (still busy from a previous update, or its "
+                  "state machine never reached IDLE -- check busy_pin wiring)");
     return BackendResult::DEVICE_ERROR;
   }
 
+  ESP_LOGD(TAG, "starting refresh");
   this->display_->update();
 
   // update() drives the component out of LOOP_DONE synchronously, so this is
@@ -169,7 +171,7 @@ BackendResult EpaperSPIBackend::begin_refresh(RefreshRequest request) {
   // removes the race where a refresh completing between two polls is never
   // observed as busy and therefore never reported complete.
   if (this->display_->is_idle()) {
-    ESP_LOGW(TAG, "update() did not start a refresh");
+    ESP_LOGW(TAG, "update() returned without starting a refresh (driver rejected it)");
     return BackendResult::DEVICE_ERROR;
   }
   this->refresh_started_ = true;
@@ -193,6 +195,7 @@ PollResult EpaperSPIBackend::poll_refresh() {
     return PollResult::PENDING;
 
   this->refresh_started_ = false;
+  ESP_LOGD(TAG, "refresh complete (driver returned to idle)");
   return PollResult::COMPLETE;
 }
 

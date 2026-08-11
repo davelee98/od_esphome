@@ -404,6 +404,7 @@ EngineResult TransferEngine::finish_and_refresh_(uint16_t end_opcode, uint32_t n
 
   this->hw_owned_ = true;
   this->txn_.state = State::REFRESHING;
+  this->refresh_started_ms_ = now_ms;
   this->txn_.refresh_deadline_ms = now_ms + this->refresh_timeout_ms_;
   res.response = encode_ack(end_opcode);
   return res;

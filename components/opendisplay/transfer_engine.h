@@ -137,6 +137,7 @@ class TransferEngine {
   // poll result. Survives a refresh TIMEOUT: the protocol transaction ends, but
   // the panel is still ours until the driver is genuinely idle.
   bool hw_owned_{false};
+  uint32_t refresh_started_ms_{0};
 
   Response pending_tail_sack_{};
   bool has_tail_sack_{false};
