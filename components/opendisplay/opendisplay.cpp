@@ -163,9 +163,20 @@ void OpenDisplayComponent::setup_gatt_() {
     this->on_ble_disconnect();
   });
 
-  this->service_->start();
+  // ENQUEUE, do not call service_->start() directly.
+  //
+  // create_service() only registers the service; the GATT registration is
+  // asynchronous and completes over ESP_GATTS_* events. Calling start()
+  // immediately runs while state_ is still CREATING and handle_ is 0, so
+  // esp_ble_gatts_start_service(0) fails and the characteristics are never
+  // created -- the client then connects fine but finds NO SERVICE at all.
+  //
+  // BLEServer::loop() drives this properly: it waits for is_created(), then
+  // calls start() once per characteristic (ble_server.cpp:38-51). That queue is
+  // what ESPHome's own YAML codegen uses (esp32_ble_server/__init__.py:618).
+  esp32_ble_server::global_ble_server->enqueue_start_service(this->service_);
   this->gatt_started_ = true;
-  ESP_LOGCONFIG(TAG, "GATT service 0x%04X started", OD_BLE_SERVICE_UUID);
+  ESP_LOGCONFIG(TAG, "GATT service 0x%04X queued for start", OD_BLE_SERVICE_UUID);
 }
 #endif
 
@@ -455,7 +466,13 @@ void OpenDisplayComponent::dump_config() {
                 static_cast<unsigned>(this->config_blob_len_));
   ESP_LOGCONFIG(TAG, "  Security: NONE (open, unauthenticated characteristic)");
   ESP_LOGCONFIG(TAG, "  BLE name: %s", this->ble_name_[0] ? this->ble_name_ : "(not set)");
-  ESP_LOGCONFIG(TAG, "  GATT service: %s", this->gatt_started_ ? "started" : "NOT STARTED");
+  // Report the service's REAL state, not merely that we queued it -- the whole
+  // failure this replaced looked fine from our side.
+  const char *svc = "NOT CREATED";
+  if (this->service_ != nullptr)
+    svc = this->service_->is_running() ? "running"
+                                       : (this->service_->is_created() ? "created, not started" : "creating");
+  ESP_LOGCONFIG(TAG, "  GATT service: %s (0x%04X)", svc, OD_BLE_SERVICE_UUID);
   if (this->backend_ != nullptr) {
     const auto &caps = this->backend_->capabilities();
     ESP_LOGCONFIG(TAG, "  Panel: %ux%u, frame %u bytes, stride %u", static_cast<unsigned>(caps.width),
