@@ -341,11 +341,17 @@ ConfigBuildError build_config_blob(const DisplayCapabilities &caps, uint16_t ic_
   if (pos + 2 > out_cap)
     return ConfigBuildError::ZERO_GEOMETRY;
 
-  // CRC covers length+version+packets with the two length bytes forced to zero
-  // -- they already are, above -- and excludes the CRC field itself.
+  // CRC covers length+version+packets with the two length bytes forced to ZERO
+  // -- they still are at this point -- and excludes the CRC field itself.
   const uint16_t crc = crc16_ccitt_false(out, pos);
   put_u16_le(out + pos, crc);
   pos += 2;
+
+  // Only NOW write the real length, after the CRC has been taken over the
+  // zeroed field. The reference device ignores this field on parse, but the
+  // web toolbox warns "Length mismatch: claimed 0, actual N" when it is left
+  // zero. It counts the whole outer packet INCLUDING the trailing CRC.
+  put_u16_le(out, static_cast<uint16_t>(pos));
 
   *out_len = pos;
   return ConfigBuildError::NONE;

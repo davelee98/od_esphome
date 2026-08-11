@@ -249,14 +249,11 @@ void OpenDisplayComponent::handle_packet_(const RxPacket &pkt) {
     case CMD_PIPE_WRITE_DATA:
       res = this->engine_.on_pipe_data(f.payload, f.payload_len, now);
       break;
-    case CMD_PIPE_WRITE_END: {
-      // Canonical order: tail-flush SACK, then end-ACK, then 0x73/0x74.
+    case CMD_PIPE_WRITE_END:
+      // Canonical order is tail-flush SACK, then end-ACK, then 0x73/0x74. The
+      // SACK is staged by the engine and drained in apply_result_().
       res = this->engine_.on_pipe_end(f.payload, f.payload_len, now);
-      Response tail;
-      if (this->engine_.take_tail_sack(&tail))
-        this->send_(tail, /*terminal=*/true);
       break;
-    }
 
     default:
       // An unrelated unsupported command must NOT destroy an in-flight transfer.
@@ -272,6 +269,13 @@ void OpenDisplayComponent::handle_packet_(const RxPacket &pkt) {
 }
 
 void OpenDisplayComponent::apply_result_(const EngineResult &res) {
+  // A staged tail-flush SACK must precede whatever the engine returned. This
+  // fires for the explicit 0x0082 END and for the uncompressed auto-complete
+  // path, where the SACK is followed by an unsolicited END_ACK.
+  Response tail;
+  if (this->engine_.take_tail_sack(&tail))
+    this->send_(tail, /*terminal=*/true);
+
   const bool terminal = res.refresh_complete || res.refresh_timeout || res.terminal_error;
   if (!res.response.empty())
     this->send_(res.response, terminal);

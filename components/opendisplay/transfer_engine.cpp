@@ -321,6 +321,24 @@ EngineResult TransferEngine::on_pipe_data(const uint8_t *payload, size_t len, ui
   this->txn_.transfer_deadline_ms = now_ms + this->transfer_timeout_ms_;
   this->stats_.pipe_packets++;
 
+  // AUTO-COMPLETE (uncompressed full-frame only). The client sends NO explicit
+  // 0x0082 for this path -- it waits for an unsolicited END_ACK once total_size
+  // is reached, and stalls forever otherwise
+  // (opendisplay.org ble-common.js:5122-5145; reference firmware
+  // display_service.cpp:2965-2975). Order matters and mirrors the firmware:
+  // final tail SACK, then {0x00,0x82}, then the refresh.
+  //
+  // Gated on !compressed && !partial: a partial transfer completes only on the
+  // explicit 0x0082 END, which carries the refresh mode and new_etag.
+  if (this->txn_.accepted_bytes >= this->txn_.expected_frame_bytes && !this->txn_.frame.compressed &&
+      !this->txn_.frame.partial) {
+    this->pending_tail_sack_ = encode_pipe_sack(this->txn_.highest_seen,
+                                                build_inorder_ack_mask(this->txn_.accepted_packets));
+    this->has_tail_sack_ = true;
+    this->txn_.accepted_since_ack = 0;
+    return this->finish_and_refresh_(CMD_PIPE_WRITE_END, now_ms);
+  }
+
   if (this->txn_.accepted_since_ack >= this->txn_.negotiated_ack_every) {
     this->txn_.accepted_since_ack = 0;
     res.response = encode_pipe_sack(this->txn_.highest_seen,
