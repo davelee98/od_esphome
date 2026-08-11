@@ -4,6 +4,7 @@
 
 #ifdef USE_ESP32
 #include <esp_gap_ble_api.h>
+#include <esp_mac.h>
 // esp_ble_gatt_set_local_mtu() lives here, NOT in esp_gatts_api.h.
 #include <esp_gatt_common_api.h>
 #include <esp_gatts_api.h>
@@ -72,6 +73,32 @@ void OpenDisplayComponent::setup_gatt_() {
     ESP_LOGE(TAG, "no BLE server; add esp32_ble_server: to the config");
     this->mark_failed();
     return;
+  }
+
+  // Advertise as OD<chipid>, matching real OpenDisplay firmware exactly
+  // (Firmware/src/ble_transport_esp32.cpp:544 -> encryption.cpp:863-873):
+  //     chipId = (efuse_mac >> 24) & 0xFFFFFF, printed %06X upper-case.
+  // Arduino's getEfuseMac() loads the six MAC bytes little-endian, so that
+  // chipId is mac[3] | mac[4]<<8 | mac[5]<<16 and %06X emits mac[5], mac[4],
+  // mac[3] -- i.e. the last three MAC bytes in REVERSE order. Reproduced here
+  // byte-for-byte so an ESPHome device is indistinguishable from a tag.
+  //
+  // Set here rather than via `esp32_ble: name:` because that path forces a
+  // hyphen before the MAC suffix (make_name_with_suffix_to in ble.cpp:304),
+  // giving "OD-123456" instead of "OD123456". Safe to override: ESP32BLE sets
+  // the name at setup_priority BLUETOOTH (350) and this component runs at
+  // AFTER_CONNECTION (100), so ours is applied last and nothing resets it on an
+  // advertising restart.
+  uint8_t mac[6] = {};
+  if (esp_efuse_mac_get_default(mac) == ESP_OK) {
+    char od_name[16];
+    snprintf(od_name, sizeof(od_name), "OD%02X%02X%02X", mac[5], mac[4], mac[3]);
+    const esp_err_t nerr = esp_ble_gap_set_device_name(od_name);
+    if (nerr != ESP_OK) {
+      ESP_LOGW(TAG, "esp_ble_gap_set_device_name(%s) failed: %d", od_name, static_cast<int>(nerr));
+    } else {
+      ESP_LOGCONFIG(TAG, "BLE device name: %s", od_name);
+    }
   }
 
   // Declare the preferred ATT MTU at OD_BLE_MAX_FRAME (256) rather than the 512
