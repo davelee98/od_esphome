@@ -1,6 +1,7 @@
 #include "opendisplay.h"
 
 #include "esphome/core/log.h"
+#include "esphome/core/version.h"
 
 #ifdef USE_ESP32
 #include <esp_gap_ble_api.h>
@@ -215,7 +216,15 @@ void OpenDisplayComponent::handle_packet_(const RxPacket &pkt) {
 
     case CMD_FIRMWARE_VERSION:
       // ALWAYS PLAINTEXT so version stays readable pre-auth.
-      this->send_(encode_version(this->ver_major_, this->ver_minor_, this->ver_patch_, ""));
+      //
+      // The SHA field MUST be non-empty: py-opendisplay raises
+      // InvalidResponseError("Firmware version missing SHA hash") on shaLength 0
+      // and drops the connection (protocol/responses.py:304-305). We have no git
+      // SHA at runtime, so report the ESPHome version that built this image --
+      // it is the closest analogue of "which build is this", is ASCII, and fits
+      // the 0..40 byte limit.
+      this->send_(encode_version(this->ver_major_, this->ver_minor_, this->ver_patch_,
+                                 ESPHOME_VERSION));
       return;
 
     case CMD_READ_MSD:

@@ -17,6 +17,9 @@ DEPENDENCIES = ["esp32", "esp32_ble_server"]
 AUTO_LOAD = ["binary_sensor", "text_sensor"]
 MULTI_CONF = False
 
+# Reported by 0x0043 as major.minor.patch.
+OD_COMPONENT_VERSION = (0, 1, 0)
+
 CONF_DISPLAY = "display"
 CONF_TRANSPORT = "transport"
 CONF_TRANSFER_TIMEOUT = "transfer_timeout"
@@ -206,6 +209,8 @@ async def to_code(config):
     cg.add(backend.set_color_scheme(OD_COLOR_SCHEME_MONO))
     cg.add(backend.set_panel_ic_type(_panel_ic_for(config)))
     cg.add(var.set_ic_type(_ic_type_for_variant()))
+    # 0x0043 reports this. Bump on protocol-visible changes.
+    cg.add(var.set_version(*OD_COMPONENT_VERSION))
 
     for conf in config.get(CONF_ON_TRANSFER_STARTED, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
