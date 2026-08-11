@@ -121,6 +121,7 @@ class OpenDisplayComponent : public Component {
   esp32_ble_server::BLEService *service_{nullptr};
   esp32_ble_server::BLECharacteristic *characteristic_{nullptr};
   bool gatt_started_{false};
+  char ble_name_[16]{};
   std::vector<uint8_t> notify_scratch_{};
 #endif
 

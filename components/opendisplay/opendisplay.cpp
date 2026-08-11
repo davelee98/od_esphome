@@ -97,8 +97,13 @@ void OpenDisplayComponent::setup_gatt_() {
     if (nerr != ESP_OK) {
       ESP_LOGW(TAG, "esp_ble_gap_set_device_name(%s) failed: %d", od_name, static_cast<int>(nerr));
     } else {
-      ESP_LOGCONFIG(TAG, "BLE device name: %s", od_name);
+      // Kept for dump_config() as well as here: setup() output scrolls past
+      // before `esphome logs` attaches, so a boot-only line is easy to miss and
+      // indistinguishable from the code not running at all.
+      snprintf(this->ble_name_, sizeof(this->ble_name_), "%s", od_name);
     }
+  } else {
+    ESP_LOGW(TAG, "esp_efuse_mac_get_default failed; BLE name left as the ESPHome default");
   }
 
   // Declare the preferred ATT MTU at OD_BLE_MAX_FRAME (256) rather than the 512
@@ -449,6 +454,8 @@ void OpenDisplayComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Config blob: %s (%u bytes)", this->config_valid_ ? "valid" : "INVALID",
                 static_cast<unsigned>(this->config_blob_len_));
   ESP_LOGCONFIG(TAG, "  Security: NONE (open, unauthenticated characteristic)");
+  ESP_LOGCONFIG(TAG, "  BLE name: %s", this->ble_name_[0] ? this->ble_name_ : "(not set)");
+  ESP_LOGCONFIG(TAG, "  GATT service: %s", this->gatt_started_ ? "started" : "NOT STARTED");
   if (this->backend_ != nullptr) {
     const auto &caps = this->backend_->capabilities();
     ESP_LOGCONFIG(TAG, "  Panel: %ux%u, frame %u bytes, stride %u", static_cast<unsigned>(caps.width),
