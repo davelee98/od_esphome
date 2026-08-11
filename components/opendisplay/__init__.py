@@ -77,9 +77,12 @@ CONFIG_SCHEMA = cv.All(
                 cv.positive_time_period_milliseconds,
                 cv.Range(min=cv.TimePeriod(seconds=1), max=cv.TimePeriod(seconds=300)),
             ),
+            # Minimum 10s, NOT 1s: an e-paper full refresh takes seconds, and the
+            # IT8951 backend reports a fixed 5s settle. A 1s timeout would fire
+            # before any real refresh finished, permanently masking success.
             cv.Optional(CONF_REFRESH_TIMEOUT, default="180s"): cv.All(
                 cv.positive_time_period_milliseconds,
-                cv.Range(min=cv.TimePeriod(seconds=1), max=cv.TimePeriod(seconds=600)),
+                cv.Range(min=cv.TimePeriod(seconds=10), max=cv.TimePeriod(seconds=600)),
             ),
             cv.Optional(CONF_ON_TRANSFER_STARTED): automation.validate_automation(
                 {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(TransferStartedTrigger)}

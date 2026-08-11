@@ -197,9 +197,16 @@ PollResult EpaperSPIBackend::poll_refresh() {
 }
 
 void EpaperSPIBackend::abort_transfer() {
-  // Nothing allocated, nothing to release. The driver's buffer keeps whatever
-  // partial frame arrived; we do not clear it, because a half-written buffer is
-  // still better than flashing the panel white on every aborted transfer.
+  // Nothing of ours to release -- but note what this does NOT do.
+  //
+  // There is no staging buffer, so a partial frame is already sitting live in
+  // the driver's framebuffer and we cannot roll it back. We leave it: clearing
+  // would flash the panel white on every aborted transfer, and stale bytes are
+  // harmless AS LONG AS nothing refreshes before a complete frame replaces them.
+  //
+  // That condition is NOT enforced. A local automation calling panel.update()
+  // after busy clears will display half the new image over half the old. See
+  // docs/TODO.md finding 14 -- an accepted documented exposure, not a fix.
   this->refresh_started_ = false;
 }
 

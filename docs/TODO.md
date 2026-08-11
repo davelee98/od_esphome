@@ -348,7 +348,12 @@ spec, so a gap here is a spec bug, not a TODO detail.
       `Home_Assistant_Integration` pinning `py-opendisplay`. Interop against that stack should be an
       explicit gate, not implied.
 
-## Codex review findings (2026-08-10) — NEW WORK, several invalidate earlier decisions
+## Codex review findings (2026-08-10) — status verified 2026-08-11
+
+**Implemented and compiling.** Findings 10, 11, 12, 13, 15 and most of 16 are in
+`transfer_engine.{h,cpp}`, `protocol.{h,cpp}` and the backends. Two remain open and are
+called out below: finding 14 (abort leaves a partial frame live) and the plan-document
+staleness items, which are documentation rather than code.
 
 An independent review found issues we had missed. Verified against the canonical header where noted.
 
@@ -361,12 +366,12 @@ negotiated maxima (min-rule applies)"*, legal range 1..32.
 **Deadlock scenario:** a client requests `window=1, ack_every=1`, sends one packet and waits for its
 ACK; a receiver hard-coded to ACK every 4 waits for three more packets. Neither side moves.
 
-- [ ] Replace the fixed constants with `min(requested, our_max)` for window, ack_every, and frame.
+- [x] Replace the fixed constants with `min(requested, our_max)` for window, ack_every, and frame.
       `protocol_types.h` now names them `PIPE_MAX_*` to make this explicit.
-- [ ] **`resp_flags` bit0 (selective-repeat) must be CLEARED.** That bit is the protocol's own way of
+- [x] **`resp_flags` bit0 (selective-repeat) must be CLEARED.** That bit is the protocol's own way of
       saying "in-order only" — the plan reinvented it as a unilateral no-reorder-queue policy while
       leaving the negotiation field unspecified. bit1 (partial accepted) also always clear.
-- [ ] Return the negotiated `max_frame` too; the design never mentioned `client_max_frame`.
+- [x] Return the negotiated `max_frame` too; the design never mentioned `client_max_frame`.
 
 ### 11. "Cumulative ACK" is not a valid SACK encoding
 `0x0081`'s ACK is `[0x00][0x81][highest_seen:1][ack_mask:4 LE]`, where *"mask bit i (LSB first) =
@@ -374,11 +379,11 @@ chunk (highest_seen-1-i) received; highest_seen is implicitly acked"* (`:624-629
 `ack_mask = 0` acknowledges **only** `highest_seen`, not everything below it. To acknowledge 0-3
 contiguously we must send `highest_seen=3` **with mask bits 0,1,2 set**.
 
-- [ ] Define the exact mask construction; "cumulative" is not implementable as written.
-- [ ] **Sequence wraps mod 256** (`:626`). 48 000 bytes stays under 256 packets, but an IT8951 frame
+- [x] Define the exact mask construction; "cumulative" is not implementable as written.
+- [x] **Sequence wraps mod 256** (`:626`). 48 000 bytes stays under 256 packets, but an IT8951 frame
       wraps repeatedly. Window distance, duplicate detection, and mask generation all need explicit
       modulo arithmetic.
-- [ ] A `0x0081` NACK is **FATAL**: further `0x81` frames are discarded until the next START or
+- [x] A `0x0081` NACK is **FATAL**: further `0x81` frames are discarded until the next START or
       disconnect (`:630-633`). That is a different mechanism from re-sending the last ACK.
 
 ### 12. A new START must ABORT the active transfer, not be rejected
@@ -395,9 +400,9 @@ framebuffer *while the driver is reading it* → torn image; later `update()` ca
 rejected until the old state machine finishes. Made worse by `refresh_timeout` accepting values as
 low as 1 s (`__init__.py:74-77`).
 
-- [ ] Separate **protocol state** from **hardware ownership**. `0x0074` may end the transaction, but
+- [x] Separate **protocol state** from **hardware ownership**. `0x0074` may end the transaction, but
       the backend stays quarantined until `is_idle()` returns true.
-- [ ] Raise the `refresh_timeout` minimum well above any real refresh.
+- [x] Raise the `refresh_timeout` minimum well above any real refresh.
 
 ### 14. Abort leaves a corrupted frame that local automation will happily display
 No staging buffer means a half-received frame sits live in the driver's buffer. On abort we clear
@@ -405,7 +410,8 @@ No staging buffer means a half-received frame sits live in the driver's buffer. 
 half the old. Silent, persistent corruption. The current "a partial buffer is better than white"
 comment (`backend_epaper_spi.cpp`) is not defensible when another writer can refresh it.
 
-- [ ] Decide: clear the whole buffer on abort, hold a dirty/quarantine state until a complete frame
+- [!] **STILL OPEN — the only unfixed code finding.** Decide: clear the whole buffer on abort, hold a
+      dirty/quarantine state until a complete frame
       replaces it, or explicitly accept the corruption and document it.
 
 ### 15. `begin_refresh()` cannot tell whether `update()` was accepted
@@ -414,7 +420,7 @@ comment (`backend_epaper_spi.cpp`) is not defensible when another writer can ref
 `poll_refresh()` sees that unrelated refresh as busy, and we emit `0x0073` for someone else's
 refresh — our frame was never refreshed at all.
 
-- [ ] Require `is_idle()` before `update()`, then verify it went false; only then ACK the END.
+- [x] Require `is_idle()` before `update()`, then verify it went false; only then ACK the END.
 
 ### 16. Smaller confirmed defects
 - [x] `panel_ic_type` was `uint8_t`; wire field is `uint16_t` — IT8951 ids 3000/3001 truncated. Fixed.
@@ -425,10 +431,10 @@ refresh — our frame was never refreshed at all.
 - [x] `init()` did not check `display_->is_failed()`, so we could advertise transfer support over a
       driver whose framebuffer allocation failed. Fixed.
 - [x] Rotation-0 was asserted in a comment but never enforced. Now checked in `init()`.
-- [ ] `poll_refresh()`'s "must observe busy" guard is in the wrong place — `update()` leaves IDLE
+- [x] `poll_refresh()`'s "must observe busy" guard is in the wrong place — `update()` leaves IDLE
       synchronously, so the check belongs at `begin_refresh()`. As written, a refresh that completes
       between two polls is never reported.
-- [ ] `caps_.color_scheme` is documented as codegen-set but **no setter and no generated call
+- [x] `caps_.color_scheme` is documented as codegen-set but **no setter and no generated call
       exist** — it defaults to 0, which is mono only by accident. Needs a real setter plus a model
       allow-list.
 - [ ] Plan lists `0x0052` as deep sleep; canonically `0x0052` is POWER_OFF and `0x0053` is
@@ -437,12 +443,15 @@ refresh — our frame was never refreshed at all.
       platforms. It will fail validation before any of our code runs.
 - [ ] `epaper_spi` **partial refresh is impossible**, not merely deferred: no public region or
       per-call refresh control exists, and upstream changes are forbidden. Mark it so.
-- [ ] "Any invalid command aborts the transaction" is too broad — an unrelated unsupported command
+- [x] "Any invalid command aborts the transaction" is too broad — an unrelated unsupported command
       would destroy a valid in-flight transfer. Only transaction-scoped faults should abort.
-- [ ] TX backpressure: if the queue is full when the END ACK or `0x0073` is generated, the panel
+- [x] TX backpressure: if the queue is full when the END ACK or `0x0073` is generated, the panel
       refreshes but the client waits forever. Terminal frames need reserved capacity.
-- [ ] Timeout semantics undefined: which events extend the transfer deadline?
-- [ ] `error` is never published — `abort()` resets straight to IDLE, and busy is defined as
+- [x] Timeout semantics DEFINED: it is an **inactivity** timeout. Only an *accepted* data packet
+      extends `transfer_deadline_ms` (`transfer_engine.cpp`, both `on_direct_data` and
+      `on_pipe_data`). A duplicate or out-of-order PIPE frame deliberately does NOT, so a client
+      stuck resending the same packet still times out rather than holding the panel forever.
+- [x] `error` is never published — `abort()` resets straight to IDLE, and busy is defined as
       "any non-IDLE state", so the activity sensor can never show `error`.
 
 ## Open questions
