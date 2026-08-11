@@ -1,0 +1,178 @@
+# OpenDisplay — paste-ready config for the Home Assistant ESPHome Device Builder.
+#
+# Settings -> Add-ons -> ESPHome Device Builder -> New Device -> Skip ->
+# then replace the generated config with this file and press Install.
+#
+# ============================ READ THIS FIRST ============================
+# This component has NEVER BEEN COMPILED. Expect the first build to fail.
+# Verify locally before flashing hardware:
+#     esphome config  <this file>
+#     esphome compile <this file>
+#
+# There is NO AUTHENTICATION on the BLE characteristic. Anyone within radio
+# range can connect and write an image to the display. This is a deliberate v1
+# decision -- decide whether it is acceptable where the device will live.
+#
+# Hardware assumed: ESP32-S3 with a 2.9" 128x296 mono e-paper panel on an
+# SSD1680 controller, wired to the Seeed EE04 pinout. Pins verified against
+# opendisplay.org simple-config-presets.json -> driverBoards[5] "Seeed EE04".
+# =========================================================================
+
+substitutions:
+  device_name: opendisplay-epaper
+  friendly_name: OpenDisplay ePaper
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  # Adjust to your board. The EE04 is an ESP32-S3-N16R8.
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+# Pulls the component straight from GitHub at build time. ESPHome looks for a
+# `components/` directory at the repo root, which is where this one lives.
+external_components:
+  - source: github://davelee98/od_esphome@main
+    components: [opendisplay]
+
+logger:
+  # BLE + the transfer engine are chatty at DEBUG. Raise only while debugging.
+  level: INFO
+
+# The Device Builder generates these two for you when you create the device.
+# If you are pasting over a generated config, KEEP its api/ota keys rather than
+# using these placeholders, or you will lose access to the device.
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+
+captive_portal:
+
+# ---------------------------------------------------------------------------
+# BLE server
+# ---------------------------------------------------------------------------
+# max_clients: 1 is REQUIRED and is also the default. At 1, ESPHome stops
+# advertising once a client connects and resumes on disconnect
+# (esp32_ble_server/ble_server.cpp:172-174) -- exactly the single-central
+# behaviour this component needs. Raising it is rejected at config time.
+esp32_ble_server:
+  max_clients: 1
+
+# ---------------------------------------------------------------------------
+# Panel
+# ---------------------------------------------------------------------------
+spi:
+  clk_pin: 7
+  mosi_pin: 9
+  # No miso_pin: the panel is write-only and BUSY is a separate GPIO.
+
+display:
+  - platform: epaper_spi
+    id: panel
+
+    # `ssd1683` is the GENERIC model for the SSD16xx mono family -- it derives
+    # its gate limit from `dimensions` rather than hard-coding a panel. ESPHome
+    # treats SSD1680 and SSD1683 as one family, and EPaperMono only issues
+    # commands common to the whole family.
+    #
+    # If the first image has a wrong border or is inverted, the generic init
+    # omits two commands the SSD1680 sequence includes:
+    #   (0x3C, 0x05) border waveform, (0x21, 0x00, 0x80) display update control.
+    model: ssd1683
+    dimensions:
+      width: 128
+      height: 296
+
+    cs_pin: 44
+    dc_pin: 10
+    reset_pin: 38
+
+    # REQUIRED. Without busy_pin the driver's is_idle_() returns true
+    # unconditionally, so "refresh complete" becomes a lie and the device would
+    # report success before the panel had updated. Codegen rejects a config
+    # without it.
+    busy_pin:
+      number: 4
+      inverted: false
+      mode:
+        input: true
+        pulldown: true
+
+    # Never let ESPHome refresh on a timer while OpenDisplay owns the panel.
+    # This is a convention, not a lock -- see the busy condition below.
+    update_interval: never
+
+    # Two upstream landmines, both of which would clobber a received frame:
+    #  1. auto_clear_enabled defaults TRUE whenever a lambda: is present, so
+    #     do_update_() wipes the buffer before each update.
+    #  2. with NO lambda/pages, final validation force-injects
+    #     show_test_card: True -- overriding even an explicit false -- and
+    #     paints a test card over the received frame.
+    # A no-op lambda plus an explicit auto_clear_enabled: false defuses both.
+    auto_clear_enabled: false
+    lambda: |-
+      // intentionally empty: OpenDisplay owns this panel's contents.
+
+# ---------------------------------------------------------------------------
+# OpenDisplay
+# ---------------------------------------------------------------------------
+opendisplay:
+  id: od
+  display: panel
+  transport: ble
+  transfer_timeout: 30s
+  # Must stay comfortably above any real refresh, or the timeout fires first and
+  # masks a successful update.
+  refresh_timeout: 180s
+  on_transfer_started:
+    - logger.log: "OpenDisplay transfer started"
+  on_refresh_complete:
+    - logger.log: "OpenDisplay refresh complete"
+  on_error:
+    - logger.log:
+        format: "OpenDisplay error: %s"
+        args: ["x.c_str()"]
+
+binary_sensor:
+  - platform: opendisplay
+    opendisplay_id: od
+    name: Busy
+    id: od_busy
+
+text_sensor:
+  - platform: opendisplay
+    opendisplay_id: od
+    name: Activity
+
+# ---------------------------------------------------------------------------
+# Optional: cooperative coordination
+# ---------------------------------------------------------------------------
+# OpenDisplay is NOT an arbiter -- it and any local automation write the SAME
+# framebuffer. `update_interval: never` prevents scheduled refreshes; it does not
+# prevent a collision. Local code must wait on the busy condition, and note that
+# whoever draws last wins.
+#
+# script:
+#   - id: show_local_status
+#     mode: queued
+#     then:
+#       - wait_until:
+#           condition:
+#             not:
+#               opendisplay.is_busy: od
+#       - lambda: |-
+#           id(panel).update();
