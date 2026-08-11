@@ -2,7 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: implemented, NEVER COMPILED
+## Status: working end-to-end on hardware
+
+A client discovers the device, reads its config, uploads a full frame over PIPE_WRITE, and the panel
+refreshes — verified on an ESP32-S3 with a 128x296 SSD1680 mono panel. `docs/TODO.md` lists exactly
+what is proven and what has still never run (direct write, every error path, abort, the IT8951
+backend, repeated transfers, host tests).
+
+**Hard-won lesson, applies to any further BLE work here:** ESPHome BLE calls that look synchronous
+are driven by `loop()` state machines. Three separate bugs came from calling them too early —
+`service->start()` instead of `enqueue_start_service()`, and `esp_ble_gap_set_device_name()` from
+`setup()`. Anything touching the BLE stack from `setup()` should be treated as suspect; gate it on
+the GATT service reporting `is_running()` instead.
+
+## Previous status: implemented, NEVER COMPILED
 
 All layers now exist — codegen, protocol parse/encode, config-blob synthesis, MSD advertisement,
 transfer engine (direct + PIPE), bounded RX/TX queues, both backends, and the BLE GATT layer

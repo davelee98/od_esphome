@@ -9,9 +9,42 @@ Spec: [OpenDisplay_ESPHome_Component_Plan.md](OpenDisplay_ESPHome_Component_Plan
 Keep this file current as work happens — tick items when they land, add what you discover, and note
 blockers and decisions inline. `[ ]` open · `[x]` done · `[~]` in progress · `[!]` blocked.
 
-Status as of 2026-08-11: protocol, engine, config/MSD builders and both backends are written.
-**The component still cannot communicate** — the BLE layer is not wired, so nothing below is
-exercisable yet. See "Not implemented" immediately below.
+Status as of 2026-08-11: **END-TO-END WORKING ON HARDWARE.** A client discovers the device,
+interrogates it, uploads a full frame over PIPE_WRITE, and the panel refreshes.
+
+Verified on an ESP32-S3 + 128x296 SSD1680 mono panel:
+
+| Path | Evidence |
+|---|---|
+| Advertisement + MSD | device discovered by the client |
+| BLE name `OD346BCF` | matches firmware's reversed-byte chip-id algorithm |
+| GATT service/characteristic/CCCD | `GATT service: running (0x2446)`, notifications started |
+| `0x0040` config read | 133 bytes, 2 chunks, parsed as "128x296, MONO, rotation=0" |
+| `0x0043` firmware version | `0.1.0 SHA: 2026.7.4` |
+| `0x0044` READ_MSD | answered |
+| PIPE negotiation | `W=16 N=4 frame=232 selective=false` — min rule applied |
+| SACK masks | `highest=15 mask=0x7FFF`, `highest=20 mask=0xFFFFF` |
+| Auto-complete | unsolicited `0x0082` on the last byte |
+| `write_contiguous` → `draw_pixel_at` | **image renders correctly** |
+| Refresh + `0x0073` | panel updates, completion reported |
+
+**The mono bit packing is therefore confirmed correct on real hardware** — MSB-first, 1 = white,
+byte-identical to the OpenDisplay wire format. That was the single largest untested assumption.
+
+### Still NOT exercised
+
+- [ ] **Direct write (`0x0070`/`0x0071`/`0x0072`)** — the client chose PIPE; this path has never run.
+- [ ] **Every error and timeout path**: transfer timeout mid-frame, refresh timeout, disconnect while
+      receiving, disconnect while refreshing, backend write failure.
+- [ ] **Abort**, including finding 14 (partial frame left live in the driver buffer).
+- [ ] **Out-of-order / duplicate PIPE frames** and the window-violation abort. The happy path never
+      triggers them.
+- [ ] **`0x0081` fatal NACK latching.**
+- [ ] **The IT8951 backend** — never instantiated, never compiled into an image.
+- [ ] **Repeated transfers** — leak, queue-buildup and stuck-busy behaviour over many frames.
+- [ ] **Compression rejection** — the client honoured our "no zip" advertisement, so the reject path
+      is untested.
+- [ ] **Host tests still do not exist.**
 
 ## BLE GATT — IMPLEMENTED 2026-08-11
 
