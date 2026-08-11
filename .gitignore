@@ -64,3 +64,6 @@ secrets.yml
 # Misc
 .DS_Store
 Thumbs.db
+
+# PlatformIO core redirected here so builds do not touch the shared ~/.platformio
+.pio-core/

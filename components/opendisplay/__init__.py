@@ -51,10 +51,14 @@ from esphome.components.it8951.display import IT8951Display  # noqa: E402
 
 # Backend selection table: supported display class -> backend class. Adding a row
 # means committing to a validated adapter, not merely to a driver that compiles.
-BACKENDS = {
-    IT8951Display: IT8951Backend,
-    EPaperBase: EpaperSPIBackend,
-}
+#
+# A LIST OF PAIRS, not a dict: MockObjClass overloads __eq__ to build a C++
+# expression (cpp_generator.py:986) and therefore defines no __hash__, so it
+# cannot be a dict key.
+BACKENDS = [
+    (IT8951Display, IT8951Backend),
+    (EPaperBase, EpaperSPIBackend),
+]
 
 # Fixed v1 protocol limits. These are wire/policy contract (see docs/CLAUDE.md),
 # not user-tunable knobs -- they are asserted, not configured.
@@ -133,14 +137,20 @@ def _ic_type_for_variant():
 def _backend_class_for(display_var):
     """Resolve the display's C++ type to a backend class, or fail the config.
 
-    MUST use ``inherits_from``, not ``==``. ``epaper_spi`` generates a
-    model-specific subclass (``EPaperMono`` for seeed-ee04-mono-4.26, etc.), so
-    an equality test against ``EPaperBase`` never matches and every real config
-    would be rejected. ``MockObjClass.inherits_from`` compares stringified names,
-    which is exactly how ``cv.use_id(EPaperBase)`` itself resolves.
+    MUST use ``inherits_from`` and ONLY ``inherits_from``.
+
+    ``==`` is actively wrong here, in two ways. ``epaper_spi`` generates a
+    model-specific subclass (``EPaperMono`` for ssd1683 etc.), so an equality test
+    against ``EPaperBase`` would not match the real type. Worse, ``MockObj``
+    overloads ``__eq__`` to return a C++ *expression object* rather than a bool
+    (``cpp_generator.py:986``) -- so ``a == b`` is ALWAYS truthy and every display
+    would silently resolve to the first backend in the table.
+
+    ``inherits_from`` returns a real bool and already handles the identity case
+    (``cpp_generator.py:1169-1172``), so it needs no ``==`` companion.
     """
-    for display_class, backend_class in BACKENDS.items():
-        if display_var.type == display_class or display_var.type.inherits_from(display_class):
+    for display_class, backend_class in BACKENDS:
+        if display_var.type.inherits_from(display_class):
             return backend_class
     raise cv.Invalid(
         f"opendisplay: unsupported display type {display_var.type}. "
@@ -194,6 +204,9 @@ async def to_code(config):
 # from the YAML `model:`.
 OD_COLOR_SCHEME_MONO = 0
 
+# NOTE: keys are compared UPPER-CASED. epaper_spi validates `model:` with
+# cv.one_of(..., upper=True, space="-"), so the value reaching final validation
+# is e.g. "SSD1683", never "ssd1683".
 EPAPER_SPI_MODELS = {
     # model value -> canonical OD_COLOR_SCHEME_*
     # All EPaperMono / EPaperSSD1683: 1 bpp MSB-first, 1 = white, which is
@@ -241,8 +254,8 @@ def _final_validate(config):
         plat = platform.get("platform")
 
         if plat == "epaper_spi":
-            model = platform.get("model")
-            if model not in EPAPER_SPI_MODELS:
+            model = str(platform.get("model", "")).upper()
+            if model not in {k.upper() for k in EPAPER_SPI_MODELS}:
                 raise cv.Invalid(
                     f"opendisplay: epaper_spi model {model!r} is not validated. "
                     f"Validated models: {sorted(EPAPER_SPI_MODELS)}. Adding one "
@@ -282,16 +295,29 @@ OPENDISPLAY_CLIENT_SCHEMA = cv.Schema(
 )
 
 
+# maybe_simple_value so both forms work:
+#     opendisplay.is_busy: od
+#     opendisplay.is_busy: {opendisplay_id: od}
+# Without it the shorthand fails with "expected a dictionary", which is the form
+# every example and the plan document use.
 @automation.register_condition(
-    "opendisplay.is_busy", IsBusyCondition, OPENDISPLAY_CLIENT_SCHEMA
+    "opendisplay.is_busy",
+    IsBusyCondition,
+    cv.maybe_simple_value(OPENDISPLAY_CLIENT_SCHEMA, key=CONF_OPENDISPLAY_ID),
 )
 async def is_busy_to_code(config, condition_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_OPENDISPLAY_ID])
     return cg.new_Pvariable(condition_id, template_arg, parent)
 
 
+# synchronous=True: AbortAction::play() calls parent_->abort() and returns, so
+# play_next_() always runs before the initial play() returns. Declaring it lets
+# ESPHome keep the StringRef optimisation.
 @automation.register_action(
-    "opendisplay.abort", AbortAction, OPENDISPLAY_CLIENT_SCHEMA
+    "opendisplay.abort",
+    AbortAction,
+    cv.maybe_simple_value(OPENDISPLAY_CLIENT_SCHEMA, key=CONF_OPENDISPLAY_ID),
+    synchronous=True,
 )
 async def abort_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_OPENDISPLAY_ID])

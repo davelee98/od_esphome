@@ -11,7 +11,11 @@ esphome:
   name: opendisplay-epaper
 
 esp32:
-  board: esp32dev
+  # MUST be an ESP32-S3. The EE04 pinout below (7, 9, 10, 38, 44, 4) is S3-only:
+  # on the original ESP32, GPIO 6-11 are the flash interface and config
+  # validation rejects them outright.
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
   framework:
     type: esp-idf
 
