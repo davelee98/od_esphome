@@ -1,3 +1,13 @@
+// Compiled only when this backend is selected. ESPHome copies EVERY file in
+// a used component into the build (writer.py copy_src_tree), so without this
+// guard the driver header below is included even when that display component
+// is absent from the config -- which is a hard "No such file" build failure.
+// The define is emitted by to_code() in __init__.py and reaches us via
+// defines.h, which MUST be included BEFORE the guard -- an #ifdef ahead of
+// every #include sees nothing and silently compiles the file to nothing,
+// which surfaces only as an undefined vtable at link time.
+#include "esphome/core/defines.h"
+#ifdef USE_OPENDISPLAY_EPAPER_SPI
 #include "backend_epaper_spi.h"
 
 #include "esphome/components/epaper_spi/epaper_spi.h"
@@ -64,8 +74,10 @@ bool EpaperSPIBackend::init() {
   this->caps_.supports_direct_write = true;
   this->caps_.supports_pipe_write = true;
 
-  ESP_LOGCONFIG(TAG, "epaper_spi backend: %ux%u, %u bytes/frame, stride %u", this->caps_.width,
-                this->caps_.height, this->caps_.full_frame_bytes, this->caps_.row_stride_bytes);
+  ESP_LOGCONFIG(TAG, "epaper_spi backend: %ux%u, %u bytes/frame, stride %u",
+                static_cast<unsigned>(this->caps_.width), static_cast<unsigned>(this->caps_.height),
+                static_cast<unsigned>(this->caps_.full_frame_bytes),
+                static_cast<unsigned>(this->caps_.row_stride_bytes));
   return true;
 }
 
@@ -193,3 +205,5 @@ void EpaperSPIBackend::abort_transfer() {
 
 }  // namespace opendisplay
 }  // namespace esphome
+
+#endif  // USE_OPENDISPLAY_EPAPER_SPI

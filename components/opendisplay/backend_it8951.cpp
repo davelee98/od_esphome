@@ -1,3 +1,13 @@
+// Compiled only when this backend is selected. ESPHome copies EVERY file in
+// a used component into the build (writer.py copy_src_tree), so without this
+// guard the driver header below is included even when that display component
+// is absent from the config -- which is a hard "No such file" build failure.
+// The define is emitted by to_code() in __init__.py and reaches us via
+// defines.h, which MUST be included BEFORE the guard -- an #ifdef ahead of
+// every #include sees nothing and silently compiles the file to nothing,
+// which surfaces only as an undefined vtable at link time.
+#include "esphome/core/defines.h"
+#ifdef USE_OPENDISPLAY_IT8951
 #include "backend_it8951.h"
 
 #include "esphome/components/it8951/it8951.h"
@@ -49,10 +59,11 @@ bool IT8951Backend::init() {
   this->caps_.supports_direct_write = true;
   this->caps_.supports_pipe_write = true;
 
-  ESP_LOGCONFIG(TAG, "it8951 backend: %ux%u, %u bytes/frame", this->caps_.width, this->caps_.height,
-                this->caps_.full_frame_bytes);
+  ESP_LOGCONFIG(TAG, "it8951 backend: %ux%u, %u bytes/frame", static_cast<unsigned>(this->caps_.width),
+                static_cast<unsigned>(this->caps_.height),
+                static_cast<unsigned>(this->caps_.full_frame_bytes));
   ESP_LOGW(TAG, "0x0073 reports a fixed %u ms settle, NOT physical refresh completion",
-           IT8951_REFRESH_SETTLE_MS);
+           static_cast<unsigned>(IT8951_REFRESH_SETTLE_MS));
   return true;
 }
 
@@ -139,3 +150,5 @@ void IT8951Backend::abort_transfer() { this->refresh_settle_deadline_ms_ = 0; }
 
 }  // namespace opendisplay
 }  // namespace esphome
+
+#endif  // USE_OPENDISPLAY_IT8951

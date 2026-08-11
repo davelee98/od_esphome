@@ -10,6 +10,7 @@ import esphome.config_validation as cv
 import esphome.final_validate as fv
 from esphome import automation
 from esphome.const import CONF_ID, CONF_TRIGGER_ID
+from esphome.core import CORE
 
 CODEOWNERS = ["@OpenDisplay"]
 DEPENDENCIES = ["esp32", "esp32_ble_server"]
@@ -134,33 +135,54 @@ def _ic_type_for_variant():
     return IC_TYPE_BY_VARIANT.get(variant, 0)
 
 
-def _backend_class_for(display_var):
-    """Resolve the display's C++ type to a backend class, or fail the config.
+def _backend_class_for(config):
+    """Resolve the backend from the referenced display's PLATFORM name.
 
-    MUST use ``inherits_from`` and ONLY ``inherits_from``.
+    DO NOT try to read the C++ type off the variable. ``MockObj.__getattr__``
+    fabricates a MockObj for *any* attribute (``cpp_generator.py:895``) and
+    ``MockObj.__slots__`` has no ``type``, so ``display_var.type`` is a C++
+    expression object rather than a ``MockObjClass``. Calling
+    ``.inherits_from()`` on it returns another expression -- always truthy -- so
+    every display silently resolved to the first backend in the table. That is
+    the same trap as ``MockObj.__eq__`` returning an expression instead of a
+    bool, and it is invisible until the generated C++ fails to compile with a
+    mismatched constructor argument.
 
-    ``==`` is actively wrong here, in two ways. ``epaper_spi`` generates a
-    model-specific subclass (``EPaperMono`` for ssd1683 etc.), so an equality test
-    against ``EPaperBase`` would not match the real type. Worse, ``MockObj``
-    overloads ``__eq__`` to return a C++ *expression object* rather than a bool
-    (``cpp_generator.py:986``) -- so ``a == b`` is ALWAYS truthy and every display
-    would silently resolve to the first backend in the table.
-
-    ``inherits_from`` returns a real bool and already handles the identity case
-    (``cpp_generator.py:1169-1172``), so it needs no ``==`` companion.
+    The platform name in the validated config is a plain string and cannot lie.
+    Selecting on it HERE, at codegen time, is not the "choose a backend by
+    runtime platform name" the plan forbids -- nothing is decided on-device.
     """
-    for display_class, backend_class in BACKENDS:
-        if display_var.type.inherits_from(display_class):
-            return backend_class
+    target = config[CONF_DISPLAY]
+    for platform in CORE.config.get("display", []):
+        pid = platform.get(CONF_ID)
+        if pid is None or getattr(pid, "id", None) != getattr(target, "id", None):
+            continue
+        plat = platform.get("platform")
+        if plat == "it8951":
+            return IT8951Backend
+        if plat == "epaper_spi":
+            return EpaperSPIBackend
+        raise cv.Invalid(
+            f"opendisplay: unsupported display platform {plat!r}. "
+            f"Supported: it8951, epaper_spi."
+        )
     raise cv.Invalid(
-        f"opendisplay: unsupported display type {display_var.type}. "
-        f"Supported drivers: it8951, epaper_spi."
+        f"opendisplay: could not resolve display id {target} to a display platform."
     )
 
 
 async def to_code(config):
     display_var = await cg.get_variable(config[CONF_DISPLAY])
-    backend_class = _backend_class_for(display_var)
+    backend_class = _backend_class_for(config)
+
+    # ESPHome compiles EVERY file in a used component (writer.py copy_src_tree),
+    # so the unselected backend's .cpp would still be built and would #include a
+    # driver header that is not in this configuration. Gate each one.
+    cg.add_define(
+        "USE_OPENDISPLAY_IT8951"
+        if backend_class is IT8951Backend
+        else "USE_OPENDISPLAY_EPAPER_SPI"
+    )
 
     # The backend instance is created BEFORE component registration so the
     # component owns a fully-constructed adapter for the whole of setup().

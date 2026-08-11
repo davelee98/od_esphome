@@ -67,3 +67,10 @@ Thumbs.db
 
 # PlatformIO core redirected here so builds do not touch the shared ~/.platformio
 .pio-core/
+
+# Local ESPHome secrets for validating the examples (never committed)
+secrets.yaml
+examples/secrets.yaml
+
+# ESPHome build state created next to example configs
+.esphome/

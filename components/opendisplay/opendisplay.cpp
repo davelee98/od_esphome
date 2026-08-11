@@ -4,6 +4,8 @@
 
 #ifdef USE_ESP32
 #include <esp_gap_ble_api.h>
+// esp_ble_gatt_set_local_mtu() lives here, NOT in esp_gatts_api.h.
+#include <esp_gatt_common_api.h>
 #include <esp_gatts_api.h>
 #include <soc/soc_caps.h>
 
@@ -76,7 +78,8 @@ void OpenDisplayComponent::setup_gatt_() {
   // silently dropped (opendisplay_protocol.h:63-73).
   const esp_err_t merr = esp_ble_gatt_set_local_mtu(OD_BLE_PREFERRED_MTU);
   if (merr != ESP_OK)
-    ESP_LOGW(TAG, "esp_ble_gatt_set_local_mtu(%u) failed: %d", OD_BLE_PREFERRED_MTU, merr);
+    ESP_LOGW(TAG, "esp_ble_gatt_set_local_mtu(%u) failed: %d",
+             static_cast<unsigned>(OD_BLE_PREFERRED_MTU), static_cast<int>(merr));
 
   // 0x2446 is both the service and the characteristic UUID. advertise=true so
   // the service UUID appears in the advertisement alongside our manufacturer
@@ -298,7 +301,8 @@ void OpenDisplayComponent::drain_tx_() {
     this->notify_scratch_.assign(r.data, r.data + r.len);
     this->characteristic_->set_value(std::move(this->notify_scratch_));
     this->characteristic_->notify();
-    ESP_LOGV(TAG, "notify %u bytes (0x%02X 0x%02X)", r.len, r.data[0], r.data[1]);
+    ESP_LOGV(TAG, "notify %u bytes (0x%02X 0x%02X)", static_cast<unsigned>(r.len), r.data[0],
+             r.data[1]);
   }
 #endif
 }
@@ -403,15 +407,16 @@ void OpenDisplayComponent::publish_state_() {
 
 void OpenDisplayComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "OpenDisplay:");
-  ESP_LOGCONFIG(TAG, "  Transfer timeout: %u ms", this->transfer_timeout_ms_);
-  ESP_LOGCONFIG(TAG, "  Refresh timeout: %u ms", this->refresh_timeout_ms_);
+  ESP_LOGCONFIG(TAG, "  Transfer timeout: %u ms", static_cast<unsigned>(this->transfer_timeout_ms_));
+  ESP_LOGCONFIG(TAG, "  Refresh timeout: %u ms", static_cast<unsigned>(this->refresh_timeout_ms_));
   ESP_LOGCONFIG(TAG, "  Config blob: %s (%u bytes)", this->config_valid_ ? "valid" : "INVALID",
                 static_cast<unsigned>(this->config_blob_len_));
   ESP_LOGCONFIG(TAG, "  Security: NONE (open, unauthenticated characteristic)");
   if (this->backend_ != nullptr) {
     const auto &caps = this->backend_->capabilities();
-    ESP_LOGCONFIG(TAG, "  Panel: %ux%u, frame %u bytes, stride %u", caps.width, caps.height,
-                  caps.full_frame_bytes, caps.row_stride_bytes);
+    ESP_LOGCONFIG(TAG, "  Panel: %ux%u, frame %u bytes, stride %u", static_cast<unsigned>(caps.width),
+                  static_cast<unsigned>(caps.height), static_cast<unsigned>(caps.full_frame_bytes),
+                  static_cast<unsigned>(caps.row_stride_bytes));
     ESP_LOGCONFIG(TAG, "  Direct write: %s, PIPE_WRITE: %s", YESNO(caps.supports_direct_write),
                   YESNO(caps.supports_pipe_write));
   }

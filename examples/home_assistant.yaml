@@ -35,9 +35,19 @@ esp32:
 
 # Pulls the component straight from GitHub at build time. ESPHome looks for a
 # `components/` directory at the repo root, which is where this one lives.
+#
+# refresh: always is REQUIRED while this is under active development. ESPHome
+# caches the git clone and defaults to `refresh: 1d`, so without this you keep
+# rebuilding a copy of the repo up to a day old and see bugs that were already
+# fixed upstream. The cache lives in the add-on's own /data volume, which is not
+# reachable from the HA file editor, so re-fetching is far easier than clearing it.
+#
+# Once the component is stable, pin a tag or commit and drop this line:
+#     source: github://davelee98/od_esphome@v0.1.0
 external_components:
   - source: github://davelee98/od_esphome@main
     components: [opendisplay]
+    refresh: always
 
 logger:
   # BLE + the transfer engine are chatty at DEBUG. Raise only while debugging.

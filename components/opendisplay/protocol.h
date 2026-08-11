@@ -90,6 +90,12 @@ Response encode_version(uint8_t major, uint8_t minor, uint8_t patch, const char 
 // --- 0x0044 READ_MSD / advertisement ----------------------------------------
 static constexpr size_t MSD_BYTES = 16;
 
+// BLE company identifier carried as the first field of MsdAdvertisement. Same
+// numeric value as the service UUID and the LAN port -- 0x2446 is overloaded
+// three ways across this project. Defined here rather than in ble_transport.h so
+// the MSD builder stays transport-independent and host-testable.
+static constexpr uint16_t OD_BLE_MANUFACTURER_ID = 0x2446;
+
 struct MsdInputs {
   float chip_temperature_c{0.0f};
   uint16_t battery_10mv{0};  // 0 = no battery, the reference firmware's own encoding

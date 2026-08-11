@@ -13,6 +13,9 @@
 #include <cstdint>
 
 #include "opendisplay_protocol.h"
+// OD_COLOR_SCHEME_*, OD_PKT_*, and every config struct live here, NOT in
+// opendisplay_protocol.h.
+#include "opendisplay_structs.h"
 
 namespace esphome {
 namespace opendisplay {
