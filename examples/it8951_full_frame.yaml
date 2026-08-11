@@ -1,0 +1,75 @@
+# OpenDisplay over BLE, driving an IT8951 controller.
+#
+# !! THIS CONFIGURATION CANNOT YET MEET ITS ACCEPTANCE GATE. !!
+# The upstream it8951 driver's UPDATE_REFRESH is fire-and-forget and never
+# confirms physical refresh completion, so 0x0073 cannot be emitted honestly.
+# See docs/ESPHome_Display_Drivers_Reference.md and docs/TODO.md M0. Use the
+# epaper_spi example until an upstream terminal LUT-idle hook lands.
+#
+# Also note the driver ALWAYS allocates a full MCU framebuffer (1.31 MB at
+# 1872x1404 4bpp), so PSRAM is mandatory -- the plan's "stream into controller
+# RAM without an MCU framebuffer" data path does not exist upstream.
+#
+# UNVERIFIED against a real build.
+
+esphome:
+  name: opendisplay-it8951
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+psram:  # mandatory: the it8951 driver allocates a full MCU framebuffer
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+# BLE server is required: opendisplay registers its GATT service on it.
+esp32_ble_server:
+  manufacturer_id: 0x2446
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+display:
+  - platform: it8951
+    id: panel
+    cs_pin: GPIO5
+    reset_pin: GPIO16
+    busy_pin: GPIO4
+    # Never let ESPHome refresh on a timer while OpenDisplay owns the panel.
+    # This is a convention, not a lock -- see the busy condition below.
+    update_interval: never
+
+opendisplay:
+  id: od
+  display: panel
+  transport: ble
+  transfer_timeout: 30s
+  refresh_timeout: 180s
+  on_transfer_started:
+    - logger.log: "OpenDisplay transfer started"
+  on_refresh_complete:
+    - logger.log: "OpenDisplay refresh complete"
+  on_error:
+    - logger.log:
+        format: "OpenDisplay error: %s"
+        args: ["x.c_str()"]
+
+binary_sensor:
+  - platform: opendisplay
+    opendisplay_id: od
+    name: OpenDisplay Busy
+    id: od_busy
+
+text_sensor:
+  - platform: opendisplay
+    opendisplay_id: od
+    name: OpenDisplay Activity

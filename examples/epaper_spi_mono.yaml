@@ -1,0 +1,84 @@
+# OpenDisplay over BLE, driving a mono ePaper SPI panel.
+#
+# M4 reference configuration. Also demonstrates the cooperative-coordination
+# pattern: opendisplay is NOT an arbiter, so a local automation that writes the
+# same panel must wait on the busy condition itself.
+#
+# UNVERIFIED against a real build -- epaper_spi platform keys and model names
+# still need checking against the pinned ESPHome version (docs/TODO.md M0).
+
+esphome:
+  name: opendisplay-epaper
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+# No psram: block -- epaper_spi does not require PSRAM. The driver owns its own
+# framebuffer and this component adds no staging buffer of its own.
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+esp32_ble_server:
+  manufacturer_id: 0x2446
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+
+display:
+  - platform: epaper_spi
+    id: panel
+    # First validated target (TODO.md open question 4): Seeed EE04, 4.26" mono,
+    # 800x480, SSD1677 controller, class EPaperMono.
+    # 1 bpp MSB-first, 1 = white -> OD_COLOR_SCHEME_MONO, 48 000-byte frame,
+    # byte-identical to the OpenDisplay mono wire format.
+    model: seeed-ee04-mono-4.26
+    # Pins are intentionally omitted: this model carries presets
+    # (cs 44, dc 10, reset 38, busy 4) from models/ssd1677.py. Overriding them
+    # is how you get a silently dead panel.
+    #
+    # busy_pin matters to us specifically: without it the driver's is_idle_() is
+    # hard-true, so "refresh complete" becomes a lie and 0x0073 would fire before
+    # the panel has updated. The preset supplies it, so do not override it away.
+    update_interval: never
+    # Two upstream landmines, both of which would clobber a received frame:
+    #  1. auto_clear_enabled defaults TRUE whenever a lambda: is present, so
+    #     do_update_() wipes the buffer before each update.
+    #  2. with NO lambda/pages, final validation force-injects
+    #     show_test_card: True -- overriding even an explicit false -- and paints
+    #     a test card over our frame.
+    # A no-op lambda plus an explicit auto_clear_enabled: false defuses both.
+    auto_clear_enabled: false
+    lambda: |-
+      // intentionally empty: OpenDisplay owns this panel's contents.
+
+opendisplay:
+  id: od
+  display: panel
+
+binary_sensor:
+  - platform: opendisplay
+    opendisplay_id: od
+    name: OpenDisplay Busy
+    id: od_busy
+
+# Cooperative coordination: yield to an in-flight OpenDisplay transfer before
+# touching the same driver. `update_interval: never` prevents scheduled
+# refreshes; it does not prevent this script from colliding with a transfer.
+script:
+  - id: show_local_status
+    mode: queued
+    then:
+      - wait_until:
+          condition:
+            not:
+              opendisplay.is_busy: od
+      - lambda: |-
+          id(panel).update();
