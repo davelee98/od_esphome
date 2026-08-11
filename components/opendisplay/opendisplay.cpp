@@ -33,6 +33,29 @@ static const char *const TAG = "opendisplay";
 
 static constexpr uint32_t MSD_UPDATE_INTERVAL_MS = 1000;
 
+// Bulk image payloads. These arrive hundreds of times per frame, so they are
+// excluded from per-frame logging -- logging them would both flood the console
+// and slow the transfer enough to change its behaviour. A count is reported once
+// per transfer instead.
+static inline bool is_bulk_opcode(uint16_t opcode) {
+  return opcode == CMD_DIRECT_WRITE_DATA || opcode == CMD_PIPE_WRITE_DATA;
+}
+
+static const char *opcode_name(uint16_t opcode) {
+  switch (opcode) {
+    case CMD_CONFIG_READ:        return "CONFIG_READ";
+    case CMD_FIRMWARE_VERSION:   return "FIRMWARE_VERSION";
+    case CMD_READ_MSD:           return "READ_MSD";
+    case CMD_DIRECT_WRITE_START: return "DIRECT_WRITE_START";
+    case CMD_DIRECT_WRITE_DATA:  return "DIRECT_WRITE_DATA";
+    case CMD_DIRECT_WRITE_END:   return "DIRECT_WRITE_END";
+    case CMD_PIPE_WRITE_START:   return "PIPE_WRITE_START";
+    case CMD_PIPE_WRITE_DATA:    return "PIPE_WRITE_DATA";
+    case CMD_PIPE_WRITE_END:     return "PIPE_WRITE_END";
+    default:                     return "UNSUPPORTED";
+  }
+}
+
 void OpenDisplayComponent::setup() {
   if (this->backend_ == nullptr || !this->backend_->init()) {
     // A backend that cannot allocate or whose driver has failed must never
@@ -209,6 +232,13 @@ void OpenDisplayComponent::handle_packet_(const RxPacket &pkt) {
   const uint32_t now = millis();
   EngineResult res;
 
+  if (is_bulk_opcode(f.opcode)) {
+    this->bulk_rx_count_++;
+  } else {
+    ESP_LOGD(TAG, "RX  0x%04X %-18s %u B", f.opcode, opcode_name(f.opcode),
+             static_cast<unsigned>(f.payload_len));
+  }
+
   switch (f.opcode) {
     case CMD_CONFIG_READ:
       this->send_config_(now);
@@ -280,8 +310,21 @@ void OpenDisplayComponent::apply_result_(const EngineResult &res) {
   if (!res.response.empty())
     this->send_(res.response, terminal);
 
-  if (res.transfer_started)
+  if (res.transfer_started) {
+    this->bulk_rx_count_ = 0;
+    this->bulk_tx_count_ = 0;
     this->transfer_started_callback_.call();
+  }
+
+  if (terminal && (this->bulk_rx_count_ != 0 || this->bulk_tx_count_ != 0)) {
+    // One line in place of the hundreds that were suppressed.
+    ESP_LOGD(TAG, "bulk frames this transfer: %u in, %u acks out (%u/%u bytes)",
+             static_cast<unsigned>(this->bulk_rx_count_), static_cast<unsigned>(this->bulk_tx_count_),
+             static_cast<unsigned>(this->engine_.transaction().accepted_bytes),
+             static_cast<unsigned>(this->engine_.transaction().expected_frame_bytes));
+    this->bulk_rx_count_ = 0;
+    this->bulk_tx_count_ = 0;
+  }
 
   if (res.refresh_complete) {
     // Emitted ONLY after the backend confirmed completion. On IT8951 that
@@ -324,6 +367,17 @@ void OpenDisplayComponent::send_config_(uint32_t now_ms) {
 }
 
 void OpenDisplayComponent::send_(const Response &r, bool terminal) {
+  if (!r.empty()) {
+    // r.data[1] is the echoed command LOW byte; skip per-packet ACKs and SACKs
+    // for the bulk image opcodes.
+    const uint8_t echo = r.data[1];
+    if (echo == (CMD_DIRECT_WRITE_DATA & 0xFF) || echo == (CMD_PIPE_WRITE_DATA & 0xFF)) {
+      this->bulk_tx_count_++;
+    } else {
+      ESP_LOGD(TAG, "TX  %s 0x%02X %-16s %u B", r.data[0] == RESP_NACK ? "NACK" : "ACK ", echo,
+               opcode_name(static_cast<uint16_t>(echo)), static_cast<unsigned>(r.len));
+    }
+  }
   if (!this->tx_.push(r, terminal))
     ESP_LOGW(TAG, "tx queue full, dropped a %s frame", terminal ? "terminal" : "normal");
 }

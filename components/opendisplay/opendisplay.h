@@ -145,6 +145,10 @@ class OpenDisplayComponent : public Component {
   uint32_t msd_next_update_ms_{0};
   bool reboot_flag_{true};  // set at boot, cleared once the host has read it
 
+  // Suppressed bulk-frame counters; reported once per transfer.
+  uint32_t bulk_rx_count_{0};
+  uint32_t bulk_tx_count_{0};
+
   State published_state_{State::IDLE};
   bool published_busy_{false};
   bool error_pending_{false};
