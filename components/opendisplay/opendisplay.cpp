@@ -2,6 +2,25 @@
 
 #include "esphome/core/log.h"
 
+#ifdef USE_ESP32
+#include <esp_gap_ble_api.h>
+#include <esp_gatts_api.h>
+#include <soc/soc_caps.h>
+
+#include "esphome/components/esp32_ble/ble.h"
+
+// Chip-temperature access differs by variant, exactly as ESPHome's own
+// internal_temperature component does it (internal_temperature_esp32.cpp).
+#if defined(USE_ESP32_VARIANT_ESP32)
+// No official API on the original ESP32; the symbol name really is misspelled.
+extern "C" {
+uint8_t temprature_sens_read();
+}
+#elif SOC_TEMP_SENSOR_SUPPORTED
+#include "driver/temperature_sensor.h"
+#endif
+#endif
+
 namespace esphome {
 namespace opendisplay {
 
@@ -24,7 +43,7 @@ void OpenDisplayComponent::setup() {
   // the driver knows, and none of it changes at runtime.
   size_t len = 0;
   const ConfigBuildError err =
-      build_config_blob(this->backend_->capabilities(), /*ic_type=*/0, this->config_blob_,
+      build_config_blob(this->backend_->capabilities(), this->ic_type_, this->config_blob_,
                         sizeof(this->config_blob_), &len);
   if (err == ConfigBuildError::NONE) {
     this->config_blob_len_ = len;
@@ -34,9 +53,76 @@ void OpenDisplayComponent::setup() {
              static_cast<unsigned>(err));
   }
 
+  this->setup_chip_temperature_();
   this->update_msd_(0);
+#ifdef USE_ESP32
+  this->setup_gatt_();
+#endif
   this->publish_state_();
 }
+
+#ifdef USE_ESP32
+void OpenDisplayComponent::setup_gatt_() {
+  using esp32_ble::ESPBTUUID;
+
+  if (esp32_ble_server::global_ble_server == nullptr) {
+    ESP_LOGE(TAG, "no BLE server; add esp32_ble_server: to the config");
+    this->mark_failed();
+    return;
+  }
+
+  // Declare the preferred ATT MTU at OD_BLE_MAX_FRAME (256) rather than the 512
+  // ATT maximum, so an oversize write draws ATT error 0x0D instead of being
+  // silently dropped (opendisplay_protocol.h:63-73).
+  const esp_err_t merr = esp_ble_gatt_set_local_mtu(OD_BLE_PREFERRED_MTU);
+  if (merr != ESP_OK)
+    ESP_LOGW(TAG, "esp_ble_gatt_set_local_mtu(%u) failed: %d", OD_BLE_PREFERRED_MTU, merr);
+
+  // 0x2446 is both the service and the characteristic UUID. advertise=true so
+  // the service UUID appears in the advertisement alongside our manufacturer
+  // data -- clients filter on manufacturer id 9286, but the service UUID is what
+  // makes the device recognisable in a generic scanner.
+  this->service_ = esp32_ble_server::global_ble_server->create_service(
+      ESPBTUUID::from_uint16(OD_BLE_SERVICE_UUID), /*advertise=*/true);
+  if (this->service_ == nullptr) {
+    ESP_LOGE(TAG, "failed to create GATT service");
+    this->mark_failed();
+    return;
+  }
+
+  // WRITE_NR matters: the client streams image data without waiting for an ATT
+  // write response, which is what makes PIPE throughput possible at all.
+  const auto props = static_cast<esp_gatt_char_prop_t>(
+      ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE |
+      ESP_GATT_CHAR_PROP_BIT_WRITE_NR | ESP_GATT_CHAR_PROP_BIT_NOTIFY);
+  this->characteristic_ = this->service_->create_characteristic(OD_BLE_SERVICE_UUID, props);
+  if (this->characteristic_ == nullptr) {
+    ESP_LOGE(TAG, "failed to create GATT characteristic");
+    this->mark_failed();
+    return;
+  }
+
+  // THE BLE CALLBACK. Bounds-check, copy, return -- nothing else. Any work here
+  // runs off the loop task and would block the BLE stack.
+  this->characteristic_->on_write([this](std::span<const uint8_t> data, uint16_t conn_id) {
+    (void) conn_id;
+    this->on_ble_write(data.data(), data.size());
+  });
+
+  esp32_ble_server::global_ble_server->on_connect([this](uint16_t conn_id) {
+    (void) conn_id;
+    this->on_ble_connect();
+  });
+  esp32_ble_server::global_ble_server->on_disconnect([this](uint16_t conn_id) {
+    (void) conn_id;
+    this->on_ble_disconnect();
+  });
+
+  this->service_->start();
+  this->gatt_started_ = true;
+  ESP_LOGCONFIG(TAG, "GATT service 0x%04X started", OD_BLE_SERVICE_UUID);
+}
+#endif
 
 // --- BLE callback context ----------------------------------------------------
 // Everything in this section runs off the loop task. Bounds-check, copy, return.
@@ -201,15 +287,20 @@ void OpenDisplayComponent::send_(const Response &r, bool terminal) {
 }
 
 void OpenDisplayComponent::drain_tx_() {
+#ifdef USE_ESP32
+  if (this->characteristic_ == nullptr || !this->connected_)
+    return;
+
   Response r;
   // Bounded per iteration: notifications are paced by the stack, and draining
-  // without limit would block display progression.
+  // without limit would starve the rest of loop() and stall display progression.
   for (uint8_t i = 0; i < 4 && this->tx_.pop(&r); i++) {
-    // TODO(M1): hand `r` to the ESP32 BLE server characteristic and notify.
-    // Deliberately not implemented here -- it is the only part of the component
-    // that needs the esp32_ble_server API, and it has never been compiled.
+    this->notify_scratch_.assign(r.data, r.data + r.len);
+    this->characteristic_->set_value(std::move(this->notify_scratch_));
+    this->characteristic_->notify();
     ESP_LOGV(TAG, "notify %u bytes (0x%02X 0x%02X)", r.len, r.data[0], r.data[1]);
   }
+#endif
 }
 
 void OpenDisplayComponent::update_msd_(uint32_t now_ms) {
@@ -218,16 +309,71 @@ void OpenDisplayComponent::update_msd_(uint32_t now_ms) {
   this->msd_next_update_ms_ = now_ms + MSD_UPDATE_INTERVAL_MS;
 
   MsdInputs in;
-  // MCU die temperature, not ambient. A mains-powered ESP32 reports battery 0,
-  // which is the reference firmware's own "no battery" encoding.
-  in.chip_temperature_c = 25.0f;  // TODO(M1): read the ESP32 internal sensor
+  // MCU DIE temperature, not ambient -- the client documents it as such, so do
+  // not wire an ESPHome ambient sensor into this byte. A mains-powered ESP32
+  // reports battery 0, which is the reference firmware's own "no battery"
+  // encoding.
+  in.chip_temperature_c = this->read_chip_temperature_();
   in.battery_10mv = 0;
   in.reboot_flag = this->reboot_flag_;
   in.connection_requested = false;  // continuously connectable; nothing to request
   in.loop_counter = this->msd_loop_counter_;
   build_msd(in, this->msd_);
 
+#ifdef USE_ESP32
+  // Publish verbatim: ESPHome hands p_manufacturer_data straight to ESP-IDF, so
+  // the 2-byte company id must be IN the payload -- which it is, as the first
+  // field of MsdAdvertisement. advertising_set_manufacturer_data() restarts
+  // advertising itself, so there is no separate start call.
+  //
+  // Only republish when the bytes actually changed. Rebuilding the advertisement
+  // is comparatively expensive and, with no sensors or buttons, our record is
+  // static apart from temperature and the counter nibble.
+  if (esp32_ble::global_ble != nullptr &&
+      std::memcmp(this->msd_, this->msd_published_, MSD_BYTES) != 0) {
+    std::memcpy(this->msd_published_, this->msd_, MSD_BYTES);
+    esp32_ble::global_ble->advertising_set_manufacturer_data(
+        std::vector<uint8_t>(this->msd_, this->msd_ + MSD_BYTES));
+  }
+#endif
+
   this->msd_loop_counter_ = static_cast<uint8_t>((this->msd_loop_counter_ + 1) & 0x0F);
+}
+
+float OpenDisplayComponent::read_chip_temperature_() {
+#ifdef USE_ESP32
+#if defined(USE_ESP32_VARIANT_ESP32)
+  const uint8_t raw = temprature_sens_read();
+  if (raw == 128)  // the original ESP32's failure sentinel
+    return this->last_chip_temp_c_;
+  this->last_chip_temp_c_ = (raw - 32) / 1.8f;
+#elif SOC_TEMP_SENSOR_SUPPORTED
+  float t = NAN;
+  if (this->tsens_ != nullptr && temperature_sensor_get_celsius(this->tsens_, &t) == ESP_OK &&
+      std::isfinite(t)) {
+    this->last_chip_temp_c_ = t;
+  }
+  // On failure keep the previous reading: the MSD encoding clamps to [0,255]
+  // anyway, and a transient read error should not make the advertisement jump.
+#endif
+#endif
+  return this->last_chip_temp_c_;
+}
+
+void OpenDisplayComponent::setup_chip_temperature_() {
+#if defined(USE_ESP32) && !defined(USE_ESP32_VARIANT_ESP32) && SOC_TEMP_SENSOR_SUPPORTED
+  // Range chosen to match ESPHome's own internal_temperature component.
+  temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+  if (temperature_sensor_install(&cfg, &this->tsens_) != ESP_OK) {
+    ESP_LOGW(TAG, "chip temperature sensor install failed; MSD will report a stale value");
+    this->tsens_ = nullptr;
+    return;
+  }
+  if (temperature_sensor_enable(this->tsens_) != ESP_OK) {
+    ESP_LOGW(TAG, "chip temperature sensor enable failed");
+    this->tsens_ = nullptr;
+  }
+#endif
 }
 
 void OpenDisplayComponent::abort() { this->engine_.abort(ErrorCode::INVALID_STATE); }

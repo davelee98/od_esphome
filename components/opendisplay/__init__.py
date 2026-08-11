@@ -109,6 +109,27 @@ def _panel_ic_for(config):
     return 0
 
 
+# SystemConfig.ic_type (opendisplay_structs.h:384). Verified against the canonical
+# EE04 board preset, which declares ic_type "2" for its ESP32-S3.
+# Cosmetic -- every client consumer degrades gracefully -- so an unmapped variant
+# emits 0 rather than failing the build.
+IC_TYPE_BY_VARIANT = {
+    "esp32s3": 2,
+    "esp32c3": 3,
+    "esp32c6": 4,
+}
+
+
+def _ic_type_for_variant():
+    from esphome.components.esp32 import get_esp32_variant
+
+    try:
+        variant = str(get_esp32_variant()).lower().replace("-", "").replace("_", "")
+    except Exception:  # noqa: BLE001 - variant unavailable at this point
+        return 0
+    return IC_TYPE_BY_VARIANT.get(variant, 0)
+
+
 def _backend_class_for(display_var):
     """Resolve the display's C++ type to a backend class, or fail the config.
 
@@ -149,6 +170,7 @@ async def to_code(config):
     # struct defaults to 0, which is mono only by accident.
     cg.add(backend.set_color_scheme(OD_COLOR_SCHEME_MONO))
     cg.add(backend.set_panel_ic_type(_panel_ic_for(config)))
+    cg.add(var.set_ic_type(_ic_type_for_variant()))
 
     for conf in config.get(CONF_ON_TRANSFER_STARTED, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
@@ -174,7 +196,12 @@ OD_COLOR_SCHEME_MONO = 0
 
 EPAPER_SPI_MODELS = {
     # model value -> canonical OD_COLOR_SCHEME_*
-    "seeed-ee04-mono-4.26": OD_COLOR_SCHEME_MONO,
+    # All EPaperMono / EPaperSSD1683: 1 bpp MSB-first, 1 = white, which is
+    # byte-identical to the OpenDisplay MONO wire format.
+    "seeed-ee04-mono-4.26": OD_COLOR_SCHEME_MONO,  # 800x480, SSD1677
+    # Generic SSD16xx mono base; dimensions must be given in YAML. Covers
+    # SSD1680 panels too -- ESPHome treats 1680/1683 as one family.
+    "ssd1683": OD_COLOR_SCHEME_MONO,
 }
 
 IT8951_COLOR_SCHEMES = {
@@ -192,6 +219,21 @@ def _final_validate(config):
     """
     fconf = fv.full_config.get()
     display_id = config[CONF_DISPLAY]
+
+    # Single central. This is enforced by CONFIG, not by code: ESPHome's BLE
+    # server resumes advertising on connect only while
+    # `client_count_ < max_clients_` (ble_server.cpp:172-174), so max_clients: 1
+    # -- the default -- makes the device stop advertising as soon as a client
+    # connects and resume on disconnect. That is exactly the behaviour we want,
+    # and fighting it with raw esp_ble_gap_stop_advertising() would race the
+    # server's own advertising_start().
+    ble_server = fconf.get("esp32_ble_server")
+    if isinstance(ble_server, dict) and ble_server.get("max_clients", 1) != 1:
+        raise cv.Invalid(
+            "opendisplay: esp32_ble_server must use max_clients: 1. The component "
+            "supports a single central; with more, ESPHome keeps advertising while "
+            "connected and a second client could start a competing transfer."
+        )
 
     for platform in fconf.get("display", []):
         if platform.get(CONF_ID) != display_id:

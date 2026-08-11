@@ -5,17 +5,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Status: implemented, NEVER COMPILED
 
 All layers now exist — codegen, protocol parse/encode, config-blob synthesis, MSD advertisement,
-transfer engine (direct + PIPE), bounded RX/TX queues, and both backends.
+transfer engine (direct + PIPE), bounded RX/TX queues, both backends, and the BLE GATT layer
+(service + characteristic `0x2446`, write callback, notifications, advertisement).
 
-**Nothing has ever been compiled.** ESPHome is not installed here and there is no CI, so every C++
-and codegen file is written against documented interfaces and unverified. Assume type errors,
-signature mismatches, and wrong header paths until a build runs. Treat "it looks right" as unproven.
+**Nothing has ever been compiled.** ESPHome is not installed here and there is no CI, so assume type
+errors and signature mismatches until a build runs. Treat "it looks right" as unproven.
 
-Two deliberate gaps, both marked in-file:
+Remaining known gaps: MSD chip temperature is hard-coded, `set_version()` is never called from
+codegen, `_panel_ic_for()` always returns 0, and there are no tests. See `docs/TODO.md`.
 
-- `OpenDisplayComponent::drain_tx_()` logs instead of notifying — wiring the GATT characteristic is
-  the one piece needing the `esp32_ble_server` API, and there was no way to check it.
-- The MSD chip temperature is hard-coded; it needs the ESP32 internal sensor read.
+## The ESPHome source is checked out at `../esphome`
+
+A shallow clone pinned to **tag 2026.7.4** — the version this component targets. **Read it instead of
+guessing, and instead of trusting `docs/ESPHome_Display_Drivers_Reference.md`,** which was written
+from the web before the checkout existed. Facts verified against it so far:
+
+- `esphome::epaper_spi::EPaperBase` (`epaper_spi/epaper_spi.h:35`) and
+  `esphome::it8951::IT8951Display` (`it8951/it8951.h:140`) — both C++17 nested namespaces.
+- Python codegen classes live in `<component>/display.py`, not `__init__.py`.
+- `EPaperBase::update()` **rejects re-entry** when `state_ != IDLE` (`epaper_spi.cpp:121-125`) and
+  calls `enable_loop()` synchronously — so a caller can verify the refresh actually started.
+- `disable_loop()` fires on entering `EPaperState::IDLE` (`epaper_spi.cpp:187`, `:254`), and
+  `Component::is_idle()` tests `LOOP_DONE` (`core/component.h:215`). That pair is what makes
+  `epaper_spi` refresh completion honest.
+- `is_idle_()` returns **true** when `busy_pin_ == nullptr` (`epaper_spi.cpp:86-91`) — which is why
+  codegen must require `busy_pin`.
+- Advertising manufacturer data is passed verbatim to ESP-IDF, so the 2-byte company id must be in
+  the payload (`esp32_ble/ble_advertising.cpp:61-70`).
+
+If a claim in the reference doc conflicts with the checkout, the checkout wins — update the doc.
 
 No build/lint/test commands exist yet. Add them here as they land.
 

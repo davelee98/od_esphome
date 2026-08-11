@@ -26,27 +26,60 @@ external_components:
       path: ../components
 
 esp32_ble_server:
-  manufacturer_id: 0x2446
+  # max_clients: 1 is the default and opendisplay requires it. At 1, ESPHome
+  # stops advertising once a client connects and resumes on disconnect
+  # (ble_server.cpp:172-174) -- which is exactly the single-central behaviour we
+  # want, without fighting the stack. Raising it is rejected at config time.
+  max_clients: 1
 
 spi:
-  clk_pin: GPIO18
-  mosi_pin: GPIO23
+  # The epaper_spi model presets cover cs/dc/reset/busy only -- bus pins belong to
+  # the spi: component and are not part of any model, so they are set here.
+  clk_pin: 7
+  mosi_pin: 9
+  # No miso_pin: the panel is write-only. BUSY is a separate GPIO, not SPI.
 
 display:
   - platform: epaper_spi
     id: panel
-    # First validated target (TODO.md open question 4): Seeed EE04, 4.26" mono,
-    # 800x480, SSD1677 controller, class EPaperMono.
-    # 1 bpp MSB-first, 1 = white -> OD_COLOR_SCHEME_MONO, 48 000-byte frame,
-    # byte-identical to the OpenDisplay mono wire format.
-    model: seeed-ee04-mono-4.26
-    # Pins are intentionally omitted: this model carries presets
-    # (cs 44, dc 10, reset 38, busy 4) from models/ssd1677.py. Overriding them
-    # is how you get a silently dead panel.
+    # 2.9" mono, 128x296, SSD1680 controller.
     #
-    # busy_pin matters to us specifically: without it the driver's is_idle_() is
-    # hard-true, so "refresh complete" becomes a lie and 0x0073 would fire before
-    # the panel has updated. The preset supplies it, so do not override it away.
+    # `ssd1683` is the GENERIC model for the SSD16xx mono family -- it derives its
+    # gate-limit from `dimensions` rather than hard-coding a panel. ESPHome treats
+    # SSD1680 and SSD1683 as one family (models/weact_bwr.py: "These displays use
+    # SSD1680 or SSD1683 controller"), and EPaperMono only issues commands common
+    # to the whole family: 0x22+0x20 refresh, 0x12 reset, 0x10 sleep, 0x44/0x45
+    # and 0x4E/0x4F RAM window (epaper_spi_mono.cpp).
+    #
+    # Class EPaperMono: 1 bpp MSB-first, 1 = white -> OD_COLOR_SCHEME_MONO.
+    # Frame = ((128 + 7) / 8) * 296 = 16 * 296 = 4736 bytes, byte-identical to the
+    # OpenDisplay mono wire format.
+    #
+    # UNVERIFIED on hardware. If the border is wrong or the image is inverted, the
+    # generic ssd1683 init omits two commands the SSD1680 WeAct sequence includes:
+    # (0x3C, 0x05) border waveform and (0x21, 0x00, 0x80) display update control.
+    model: ssd1683
+    dimensions:
+      width: 128
+      height: 296
+
+    # Pin assignments carried over from the seeed-ee04-mono-4.26 preset
+    # (models/ssd1677.py). The generic ssd1683 model has no presets, so these must
+    # be explicit.
+    cs_pin: 44
+    dc_pin: 10
+    reset_pin: 38
+    # REQUIRED. Without busy_pin the driver's is_idle_() returns true
+    # unconditionally (epaper_spi.cpp:86-91), so "refresh complete" becomes a lie
+    # and 0x0073 would fire before the panel has updated. Codegen rejects a config
+    # without it. The pulldown mode is copied from the EE04 preset.
+    busy_pin:
+      number: 4
+      inverted: false
+      mode:
+        input: true
+        pulldown: true
+
     update_interval: never
     # Two upstream landmines, both of which would clobber a received frame:
     #  1. auto_clear_enabled defaults TRUE whenever a lambda: is present, so

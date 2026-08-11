@@ -13,24 +13,34 @@ Status as of 2026-08-11: protocol, engine, config/MSD builders and both backends
 **The component still cannot communicate** — the BLE layer is not wired, so nothing below is
 exercisable yet. See "Not implemented" immediately below.
 
-## NOT IMPLEMENTED — blocking, in priority order
+## BLE GATT — IMPLEMENTED 2026-08-11
 
-The logic is complete but unreachable: no packet can arrive and no response can leave.
+Written against the `../esphome` checkout (tag 2026.7.4), not inferred.
 
-- [ ] **Register the GATT service and characteristic (`0x2446`).** Nothing creates them. Request
-      `OD_BLE_PREFERRED_MTU` (256) and declare the characteristic value length to match.
-- [ ] **Route the write callback into `on_ble_write()`.** The method exists and is correct; nothing
-      calls it.
-- [ ] **Implement `drain_tx_()`.** It currently logs instead of notifying, so every ACK, SACK,
-      config chunk and `0x0073` is discarded.
-- [ ] **Broadcast the MSD.** `build_msd()` fills `msd_[16]` and nothing publishes it as BLE
-      manufacturer data — so the device is undiscoverable and M1's gate cannot be met.
-- [ ] Handle connect/disconnect events into `on_ble_connect()` / `on_ble_disconnect()`; stop
-      advertising while connected and resume after (single-central decision).
+- [x] GATT service + characteristic `0x2446` created via `global_ble_server->create_service()` /
+      `create_service(...)->create_characteristic(uint16_t, esp_gatt_char_prop_t)`. Properties are
+      READ | WRITE | **WRITE_NR** | NOTIFY — write-without-response is what makes PIPE throughput
+      possible.
+- [x] `esp_ble_gatt_set_local_mtu(256)` declares the preferred MTU at `OD_BLE_MAX_FRAME`.
+- [x] Write callback routed to `on_ble_write()` — bounds-check, copy, return, nothing else.
+- [x] `drain_tx_()` notifies via `set_value()` + `notify()`, bounded to 4 frames per `loop()`.
+- [x] MSD broadcast via `esp32_ble::global_ble->advertising_set_manufacturer_data()`, republished
+      only when the 16 bytes change. The company id is in the payload because ESPHome passes the
+      buffer verbatim to ESP-IDF.
+- [x] Connect/disconnect wired to `on_ble_connect()` / `on_ble_disconnect()`.
+- [x] Stop advertising while connected, resume on disconnect. **Enforced by config, not code:**
+      ESPHome resumes advertising on connect only while `client_count_ < max_clients_`
+      (`esp32_ble_server/ble_server.cpp:172-174`), so `max_clients: 1` — the default — already gives
+      exactly this. `FINAL_VALIDATE_SCHEMA` rejects anything higher. Calling
+      `esp_ble_gap_stop_advertising()` ourselves would have raced the server's own
+      `advertising_start()`.
 
 ## Not implemented — functional gaps
 
-- [ ] MSD `chip_temperature` is hard-coded to 25 °C; read the ESP32 internal sensor.
+- [x] MSD `chip_temperature` now reads the real die sensor, following ESPHome's own
+      `internal_temperature_esp32.cpp`: `temprature_sens_read()` on the original ESP32 (with its 128
+      failure sentinel), `temperature_sensor_get_celsius()` elsewhere. A failed read keeps the last
+      good value so the advertisement does not jump.
 - [ ] `set_version()` is never called from codegen — `0x0043` reports 0.1.0 with an empty SHA.
 - [ ] `_panel_ic_for()` always returns 0 and `PANEL_IC_BY_MODEL` is dead code. 0
       (`EP_PANEL_UNDEFINED`) degrades safely for mono, so this is a limitation rather than a defect —

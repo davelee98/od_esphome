@@ -12,6 +12,21 @@
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 
+#include <cmath>
+#include <cstring>
+#include <vector>
+
+#ifdef USE_ESP32
+#include <soc/soc_caps.h>
+#if !defined(USE_ESP32_VARIANT_ESP32) && SOC_TEMP_SENSOR_SUPPORTED
+#include "driver/temperature_sensor.h"
+#endif
+#include "esphome/components/esp32_ble/ble_uuid.h"
+#include "esphome/components/esp32_ble_server/ble_characteristic.h"
+#include "esphome/components/esp32_ble_server/ble_server.h"
+#include "esphome/components/esp32_ble_server/ble_service.h"
+#endif
+
 #include "backend.h"
 #include "ble_transport.h"
 #include "protocol.h"
@@ -39,6 +54,9 @@ class OpenDisplayComponent : public Component {
 
   void set_transfer_timeout(uint32_t ms) { this->transfer_timeout_ms_ = ms; }
   void set_refresh_timeout(uint32_t ms) { this->refresh_timeout_ms_ = ms; }
+  // SystemConfig.ic_type, set from the build variant at codegen. Cosmetic (no
+  // client consumes it behaviourally) but free to get right.
+  void set_ic_type(uint16_t ic_type) { this->ic_type_ = ic_type; }
   void set_version(uint8_t major, uint8_t minor, uint8_t patch) {
     this->ver_major_ = major;
     this->ver_minor_ = minor;
@@ -81,6 +99,8 @@ class OpenDisplayComponent : public Component {
   void drain_tx_();
   void publish_state_();
   void update_msd_(uint32_t now_ms);
+  float read_chip_temperature_();
+  void setup_chip_temperature_();
   void send_config_(uint32_t now_ms);
 
   OpenDisplayBackend *backend_;
@@ -91,9 +111,18 @@ class OpenDisplayComponent : public Component {
   uint32_t transfer_timeout_ms_{30000};
   uint32_t refresh_timeout_ms_{180000};
   uint8_t ver_major_{0}, ver_minor_{1}, ver_patch_{0};
+  uint16_t ic_type_{0};  // 0 = unmapped variant; degrades to "Unknown" client-side
 
   uint32_t connection_generation_{0};
   bool connected_{false};
+
+#ifdef USE_ESP32
+  void setup_gatt_();
+  esp32_ble_server::BLEService *service_{nullptr};
+  esp32_ble_server::BLECharacteristic *characteristic_{nullptr};
+  bool gatt_started_{false};
+  std::vector<uint8_t> notify_scratch_{};
+#endif
 
   // Config blob, synthesised once at setup(). If the build failed we must answer
   // [0xFF][0x40][0x00][0x00] rather than a half-true blob.
@@ -102,7 +131,14 @@ class OpenDisplayComponent : public Component {
   bool config_valid_{false};
 
   uint8_t msd_[MSD_BYTES]{};
+  uint8_t msd_published_[MSD_BYTES]{0xFF};  // forces a first publish
   uint8_t msd_loop_counter_{0};
+  // Last good die-temperature reading; retained across transient read failures
+  // so the advertisement does not jump.
+  float last_chip_temp_c_{25.0f};
+#if defined(USE_ESP32) && !defined(USE_ESP32_VARIANT_ESP32) && SOC_TEMP_SENSOR_SUPPORTED
+  temperature_sensor_handle_t tsens_{nullptr};
+#endif
   uint32_t msd_next_update_ms_{0};
   bool reboot_flag_{true};  // set at boot, cleared once the host has read it
 
